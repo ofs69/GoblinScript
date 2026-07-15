@@ -1,0 +1,2 @@
+# GoblinScript
+goblin
