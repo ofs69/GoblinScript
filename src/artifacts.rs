@@ -1,7 +1,8 @@
 //! Artifact rarity events of the WRITTEN action list — the port of
-//! jepa_infer's `artifact_events`, reading the SAME embedded
-//! `artifact_prior.json` (the one prior definition, include_str!'d like
-//! projector.js, so the two sides cannot drift). An artifact is a
+//! jepa_infer's `artifact_events`, reading the SAME `artifact_prior.json`
+//! (include_str!'d at build time, like projector.js). The training tree holds
+//! the fit that produced it and keeps a byte-identical copy, checked by its
+//! `grid_check.py`, so the two sides cannot drift. An artifact is a
 //! non-sensical action SEQUENCE — one that almost never occurs in the
 //! training data — so the instrument is windowed bigram NLL over
 //! quantized stroke tokens, fit on authored corpus scripts and grounded
@@ -30,7 +31,7 @@ pub struct Prior {
 pub fn prior() -> &'static Prior {
     static P: OnceLock<Prior> = OnceLock::new();
     P.get_or_init(|| {
-        serde_json::from_str(include_str!("../../artifact_prior.json"))
+        serde_json::from_str(include_str!("artifact_prior.json"))
             .expect("artifact_prior.json embedded at build time")
     })
 }

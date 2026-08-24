@@ -582,13 +582,13 @@ fn handle(mut req: tiny_http::Request, state: &Arc<Mutex<Session>>) -> Result<bo
                     .with_header(header("Content-Type", "text/html; charset=utf-8")),
             );
         }
-        // The ONE projection definition, shared with vr_project.py's aiming
-        // page -- included straight from the repo root so the two tools cannot
-        // drift apart: the preview and the render agree per pixel because
-        // there is exactly one copy of the mapping.
+        // The ONE projection definition, shared verbatim with vr_project.py's
+        // aiming page in the training tree, which keeps a byte-identical copy
+        // and checks it (`grid_check.py`). The preview and the render agree
+        // per pixel because there is exactly one mapping, spelled once.
         (Method::Get, "/projector.js") => {
             let _ = req.respond(
-                Response::from_string(include_str!("../../projector.js"))
+                Response::from_string(include_str!("projector.js"))
                     .with_header(header("Content-Type", "text/javascript; charset=utf-8")),
             );
         }
