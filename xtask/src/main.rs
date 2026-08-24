@@ -384,7 +384,7 @@ fn main() -> Result<()> {
 
     // what is about to be baked in -- a stale bundle should be seen, not shipped
     let man = std::fs::read_to_string(root.join("bundle/manifest.json"))
-        .context("bundle/ is empty -- run export_bundle.py first")?;
+        .context("bundle/ is empty -- export a bundle from the training tree first")?;
     let field = |key: &str| {
         man.split(&format!("\"{key}\":"))
             .nth(1)
@@ -399,7 +399,7 @@ fn main() -> Result<()> {
         field("enc_dtype"),
     );
     if field("enc_dtype") != "fp16" {
-        bail!("bundle/ is not fp16 -- only the fp16 model ships; re-run export_bundle.py");
+        bail!("bundle/ is not fp16 -- only the fp16 model ships; re-export it");
     }
 
     // The row clock this bundle will write every action on. `bundle.rs` pins

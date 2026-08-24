@@ -27,10 +27,10 @@ still works, but it is no longer a fast path worth chasing: CUDA measures ~56 ms
 against DirectML's 60, so the vendor-neutral backend is now at parity and the
 default build is the one to ship.
 
-That parity is recent and it came from `fuse_attention` (`export_bundle.py`),
-which does two things. It hands attention to ONE fused `MultiHeadAttention`
-node instead of the exporter's MatMul -> Softmax -> MatMul, and it feeds that
-node a **packed** `(B,S,N,3,H)` q/k/v tensor rather than three separate ones.
+That parity is recent and it came from the shape the bundle's encoder carries
+attention in. Two things: attention is ONE fused `MultiHeadAttention` node
+rather than a MatMul -> Softmax -> MatMul, and that node is fed a **packed**
+`(B,S,N,3,H)` q/k/v tensor rather than three separate ones.
 The second half is where DirectML's win is: the separate layout reaches a
 generic path that still materializes the score matrix (144 ms), the packed one
 reaches DirectML's native fused attention operator (59 ms). Attention went from
@@ -42,10 +42,11 @@ refuses up front (`manifest.attn`) rather than dying inside the encode stage.
 That costs a real debugging tool -- the CPU provider is fp32 with no vendor EP in
 the path, which is the reference a suspect draft gets bisected against when a
 GPU backend MISCOMPUTES rather than fails (the fp16 overflow `encode.rs` guards
-against). The replacement is a re-export: `export_bundle.py --cpu-attn` builds
-the separate-qkv bundle, which runs everywhere at 2.4x the DirectML cost, and
-whose CPU forward is 4.5 s -- 74x the shipped GPU path (peak working set 1.7 GB,
-down from 10 GB: ORT's CPU attention kernel does not materialize either).
+against). The replacement is a different bundle: a separate-qkv export runs
+everywhere at 2.4x the DirectML cost, and its CPU forward is 4.5 s -- 74x the
+shipped GPU path (peak working set 1.7 GB, down from 10 GB: ORT's CPU attention
+kernel does not materialize either). `--bundle <DIR>` loads one without a
+rebuild, so the reference is a bundle swap.
 
 **VRAM did not move**: 4.5 GB on DirectML, measured before and after. The 8 GB
 the README asks for is still the number.
@@ -141,11 +142,10 @@ Inside a video the head is the overlap that pays (above). The frame read is not:
 that read onto its own thread ahead of the encoder is **measured a wash** --
 see Open.
 
-**The transcode is not an optimization.** Every clip the model has ever seen --
-the whole training corpus, and every draft made through `draft.py` -- was first
-re-encoded to that spec. A pristine 4K source fed straight to the encoder is
-off-distribution in a way nobody has measured, so GoblinScript normalizes first and
-reads only from the normalized copy.
+**The transcode is not an optimization.** Every clip the model has ever seen
+reached it through that same re-encode. A pristine 4K source fed straight to
+the encoder is off-distribution in a way nobody has measured, so GoblinScript
+normalizes first and reads only from the normalized copy.
 
 **High-fps sources draft on the normal path**: the fps filter lands every
 source on the 30 fps deploy grid (a 60 fps source contributes every other
@@ -163,24 +163,23 @@ Three things carry the design:
 
 * **The aim folds into the transcode.** `Config::filter_prefix` emits
   `crop=<eye>,v360=<aim>` and `ffmpeg::transcode` puts it in FRONT of the
-  existing `scale,fps` chain. One pass, no intermediate render -- unlike
-  `vr_project.py`, which must materialize a flat MP4 because the dataset
-  stores it. A static aim means v360 builds its LUT once, so the pass costs
+  existing `scale,fps` chain. One pass, no intermediate render: no flat copy
+  is ever materialized, because nothing here needs one to exist afterwards.
+  A static aim means v360 builds its LUT once, so the pass costs
   about what a flat transcode costs. A range trim becomes an input seek.
-* **The preview IS the render.** `projector.js` -- included straight from the
-  repo root with `include_str!("../../projector.js")`, the same file
-  `vr_project.py serve` loads -- reproduces v360's mapping per pixel, so the
+* **The preview IS the render.** `src/projector.js` -- baked into the exe with
+  `include_str!` -- reproduces v360's mapping per pixel, so the
   page projects server-supplied eye frames itself and re-aiming is a redraw,
   not a round trip. **V** flips to a frame ffmpeg's own v360 produced: the one
   check that catches the shader and the renderer disagreeing. There is exactly
-  one copy of the mapping, so the two tools cannot drift apart.
+  one copy of the mapping, so the preview and the pass cannot drift apart.
 * **The whole batch is aimed before any of it drafts.** `prefetch.rs` starts
   the next video's transcode a whole draft early and cannot do that for a video
   whose aim is an open question -- so `vr_prep` asks every question up front
   and the batch then runs unattended.
 
 The aim lands in `cache/vr/<source-fingerprint>.json` (source identity, so it
-survives re-aiming) in the same format `vr_project.py` writes, and it is folded
+survives re-aiming), and it is folded
 into the DRAFT cache key (`Cache::open`) -- re-aiming changes every pixel the
 encoder sees, so it must not reuse the old aim's transcode.
 
@@ -191,11 +190,10 @@ amount because it streams the trimmed copy.
 
 **The viewport aspect is the anamorphic squash.** `encode.rs` opens the decoder
 at `scale=enc_res:enc_res` -- a flat squeeze into a square -- so the aspect
-chosen on the page IS the stretch the model sees. 16:9 is 94% of the training
-corpus and the shape every VR clip in it was reprojected at, so
+chosen on the page IS the stretch the model sees. 16:9 is the shape the model
+was trained at and the one every VR clip reached it in, so
 `Config::aspect_warning` flags anything else; the preview looks perfectly aimed
-either way, which is what makes it worth a warning. `vr_project.py` refuses it
-outright (`check_aspect`), because there a bad aspect enters the corpus.
+either way, which is what makes it worth a warning.
 
 Detection (`vr::detect`) is recall-biased and deliberately not the last word:
 stereo/spherical side data decides when present, frame shape otherwise (a 2:1
@@ -735,15 +733,9 @@ checkout -- everything below the CLI is plain Rust with no model in it.
 
 What a checkout does not carry is the **bundle**: the ONNX graphs and the
 manifest of deploy constants that make up the goblin itself. It is a build
-product of the training tree, generated from a champion checkpoint by
-`export_bundle.py` and weighing ~250 MB, so it is neither committed nor part
-of the source distribution. A released `goblinscript.exe` has one baked in.
-
-The tools named through this document that produce or check a bundle --
-`export_bundle.py`, `parity.py`, `compare_drafts.py` -- live in the training
-tree beside the encoder and the checkpoints, not here. That tree is not public
-yet. Where this document shows one of them being run, it is describing how the
-shipped bundle came to be, not a command a checkout can execute.
+product of the training tree -- exported from a champion checkpoint, weighing
+~250 MB -- so it is neither committed nor part of the source distribution. A
+released `goblinscript.exe` has one baked in.
 
 ```bash
 cargo build --release                        # no model: needs --bundle <DIR>
@@ -758,28 +750,19 @@ needs no GPU and no ffmpeg -- it is bytes out of the exe, dispatched before
 any of that is looked for. `--features embed` reads `bundle/` at compile time
 and will not build without it.
 
-The vision graphs export in fp16, with attention emitted in an overflow-safe
-form (V-JEPA's attention logits exceed fp16's range on real frames; see
-`export_bundle.py`'s docstring for the mechanism and the measured parity), and
-then rewritten into `com.microsoft.MultiHeadAttention` by `fuse_attention` so
-the score matrix is never materialized. The rewrite keeps the overflow-safe
-ordering rather than undoing it: q goes into the node PRE-SCALED with
-`scale=1.0`, because handing it an unscaled q and a scale attribute is
-algebraically identical but computes an 8x larger intermediate (~232k, past
-fp16's 65504) on any backend that materializes -- DirectML's implementation
-does. Every Softmax in the graph must fuse or the export fails loudly; a
-partly-fused encoder is not a thing to ship.
-`--enc-fp32` exports a range-proof fp32 encoder instead -- a debugging axis
-for numerics attribution, twice the size, ~6.4x slower on DirectML, never
-what ships; `cargo xtask dist` refuses a non-fp16 bundle outright.
+The vision graphs a shipped bundle carries are **fp16**, with every Softmax
+fused into `com.microsoft.MultiHeadAttention` -- a partly-fused encoder is not
+a thing to ship, and `cargo xtask dist` refuses a non-fp16 bundle outright.
+An fp32 encoder is twice the size and ~6.4x slower on DirectML; it exists as a
+range-proof reference to attribute numerics against, never as a release.
 
 `cargo build --release --features embed,cuda` adds the optional CUDA fast
 path. ONNX Runtime refuses CUDA and DirectML in one session, so the CUDA
 attempt is a separate session build that must fail loudly (`error_on_failure`)
 before DirectML is tried -- otherwise a CUDA-less machine would silently land
-on the CPU provider. The draft is EP-independent at the product level
-(compare_drafts: corr 0.983 / kappa 0.973 vs the Python draft, the same as
-DirectML's).
+on the CPU provider. The draft is EP-independent at the product level: the
+CUDA build's funscript scores the same against the reference draft as
+DirectML's does.
 
 `cargo xtask dist` packs `dist/goblinscript-<ver>-dml.zip` (exe + DirectML.dll
 + `THIRD-PARTY-NOTICES.txt` + the operator's `README.txt` -- runs on any DX12
@@ -833,72 +816,38 @@ Without `--features embed` the binary has no model in it and needs `--bundle
 <DIR>` -- which is how you iterate on a bundle without a ~250 MB rebuild each
 time.
 
-`export_bundle.py` is the only seam between the research tree and the product.
-It reads the checkpoint's own arch, exports the five graphs, checks each one
-against PyTorch, and writes a manifest of every deploy constant (v_std, the
-level-decode temperature, the stillness gate, the boundary thresholds) so that
-none of them are re-guessed in Rust.
+The bundle is the only seam between the research tree and the product. It is
+traced from the checkpoint's own arch, every graph in it is checked against
+PyTorch before it is written, and the manifest beside them carries every deploy
+constant (v_std, the level-decode temperature, the stillness gate, the boundary
+thresholds) so that none of them are re-guessed in Rust.
 
 ## Parity
 
-The graphs are not trusted because they exported. They are checked:
+The graphs are not trusted because they exported: a bundle is checked against
+a reference forward before it ships. Two things here exist for that check and
+for nothing else.
 
-```bash
-python parity.py --id 000626
-```
+**`--from-latents`** (hidden) feeds the head stage rows read off disk instead
+of an encode. It is the only way `heads.rs`'s own chunk boundaries, ctx
+padding, short-tail lookback and stepped envelope buffer are the things under
+test rather than a re-implementation of them, and it reaches them with the
+encoder taken out of the picture. Read the result by comparing max|d| at the
+chunk seams against max|d| in the interior: the two moving together is
+execution-provider numerics, a seam far above the interior is the tiling.
 
-`--ep` picks the backend every graph runs on. It defaults to DirectML -- what a
-user actually runs, and where fp16 range and fused-kernel numerics show up.
-`--ep CPUExecutionProvider` is the fp32 no-vendor-kernel reference, and it
-cannot run a shipped bundle's encoder at all (packed attention has no CPU
-kernel), so it is a deliberate numerics comparison rather than a fallback. A
-silent fallback to CPU is refused rather than reported as the backend's own
-numbers.
-
-* **latents** -- the exported encoder over a corpus clip's real frames vs the
-  production int8 cache, row for row. Last run (c318cap bundle, DirectML):
-  corr **0.999630**, 82.4% of int8 values bit-identical, 0.27% off by more
-  than one quantization step. The fusion history that got here: unfused
-  0.999446 / 75.2% / 0.76%, fused separate-qkv 0.999438 / 74.8% / 0.81%,
-  packed 0.999573 / 79.6% / 0.45% -- the fused kernels accumulate in fp32
-  where the materialized fp16 path does not, so speed bought a little
-  accuracy. The int8 step (8/127) is the tolerance that matters: a
-  difference the quantizer rounds away cannot reach the model.
-* **tracks** -- the head and envelope graphs over cached latents vs
-  `jepa_infer`'s own forward. Last run (c318cap bundle): corr 1.00000000 on
-  all seven tracks (vmarg, level, both rails, env, both rev heads),
-  autoregressive envelope included.
-* **rust** (`--rust`) -- the same cached rows through the SHIPPED BINARY's
-  head stage (`--from-latents`, hidden) instead of a Python loop, diffed
-  against the same reference. The tracks stage above re-implements the
-  chunking in Python, so this is the only check that exercises `heads.rs`'s
-  own chunk boundaries, ctx padding, short-tail lookback and stepped
-  envelope buffer -- and it reaches them without the encoder's int8
-  divergence in the way. The report splits max|d| at the chunk seams from
-  max|d| in the interior: the two moving together is execution-provider
-  numerics, a seam far above the interior is the tiling.
-* **drafts** -- `compare_drafts.py`, the product-level check: the Rust
-  funscript vs the Python pipeline's, resampled and judged like a draft.
-  The Python reference runs UNMASKED (`jepa_infer --masks none --val-frac
-  1.0`) because deploy runs no mask stage -- against a masked reference the
-  gap is the mask asymmetry, not the port (measured on 000626: 0.888 masked
-  vs 0.982 unmasked, same bundle). Last run (c318cap bundle, both benchmark
-  clips, first 8 min, `--no-transcode --no-autocrop --no-exposure`):
-  000626 position corr 0.982, travel ratio 1.018, reversal kappa 0.972
-  (P 0.983 R 0.983) at +-1 frame -- at the historical bar. 006872 position
-  corr 0.874, kappa 0.910 (P 0.924 R 0.963), dragged by ONE anti-phase span
-  (see Open below); outside it the clip reads 0.92-0.99 per 30 s segment.
-  Both sides are deterministic: a re-draft from the kept cache is
-  byte-identical.
-
-Every check runs on real data on purpose. An earlier version verified on random
-tensors and reported the head as broken (`max|d|` ~ 4.5) when it was exact --
-uniform int8 is an 8-sigma input that saturates the mask net, and no encoder
-ever emits it.
+**Determinism**, so that a comparison at the funscript level means something.
+A re-draft from a kept cache is byte-identical, and a draft is EP-independent
+at the product level -- so a moved number is a real change and never noise.
+That level is worth checking on its own: a port that reproduces every track
+and ships different actions is still a broken port, and only the actions show
+it. Run one with `--no-transcode --no-autocrop --no-exposure` on a clip that
+is already at the deploy spec, or the comparison measures the stages rather
+than the port.
 
 ## A new champion
 
-Re-run `export_bundle.py` against the new checkpoint and rebuild. The manifest
+A new champion arrives as a new bundle: drop it in and rebuild. The manifest
 carries the arch, so a checkpoint that only retunes the existing heads needs no
 Rust change. A checkpoint that adds a NEW head -- or new DECODE logic -- needs
 the styler taught what to do with it: `style.rs` implements exactly the
@@ -910,31 +859,13 @@ three thresholds are per-CHECKPOINT calibration read from the manifest,
 not constants: they threshold the dwell head's published posterior, so
 a checkpoint whose head folds its class prior out needs its own triple
 and a stale literal here would silently ship the wrong operating point
-(`jepa_infer.PLAT_*` is the one definition both decoders read). The v21b_c91_s888 ->
-mlp_s888 hand-over was the worked example: the MLP dwell head flowed through
-the export untouched (the graph is traced from the checkpoint's own arch),
-while the peak filter was decode logic and needed the style.rs port plus a
-`plat_peak` manifest constant.
+(`jepa_infer.PLAT_*` is the one definition both decoders read). The split runs
+right down that line: a head is a graph and rides the export untouched, while
+anything that reads its output is decode logic and lands here, as a port plus
+whatever manifest constant it thresholds against.
 
 ## Open
 
-* The draft-level gap vs the Python pipeline is a VITERBI NEAR-TIE input
-  sensitivity, localized on the c318cap bundle (2026-08-08, 006872, first
-  8 min): one anti-phase span at ~320-375 s where the two drafts move in
-  opposite phase, re-syncing exactly at the 375.6 s cut. Everything else is
-  ruled out by measurement -- the detected cuts match the dataset boundaries
-  to the decimal (identical cut-flag input), the heads match to corr
-  1.00000000 on identical latents, and both sides re-draft byte-identically
-  -- leaving the input provenance as the difference: Rust encodes live
-  (fp16 DirectML -> int8) while Python reads the corpus int8 cache, 0.27% of
-  cells apart by more than one step, enough to flip a near-tied viterbi
-  branch for the span between re-anchors. Consistent with the older
-  fp16-vs-fp32 observation (max|d| on the same rows in both precisions: the
-  tie is closer than either backend's distance to the cache). A flip changes
-  WHICH locally-plausible phase the span gets, not timing quality -- reversal
-  P/R stays 0.92/0.96 through it. No fix is planned: the cache is not
-  available at deploy, and a tie this close means the model itself is
-  ambivalent there.
 * AMD is unvalidated locally (no AMD box); DirectML semantics are
   vendor-neutral and `--bench` self-checks finiteness and latent std in the
   field.
