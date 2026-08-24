@@ -41,6 +41,13 @@ and artifact_speed.py. They are written down here
 rather than recomputed, so the poster renders in seconds and the values on it
 are exactly the ones quoted in the run.
 
+The first four rows are read where the person WROTE a script. A video the
+person left unscripted for three minutes has no answer there to compare a
+draft against, so those spans count neither as a miss nor as an invention, and
+one convention covers all three versions: the page compares versions and never
+conventions. The last two rows read written speed alone and take the person's
+line from the script's own actions, so they never needed the distinction.
+
     python goblinscript/release_poster.py --out infer_out/release_v030
 """
 import argparse
@@ -97,28 +104,28 @@ SECTIONS = [
     ("HOW CLOSE TO THE PERSON'S SCRIPT", BRIGHT, WAVE,
      "A longer bar is better on all three rows.", [
         ("How well the script follows the action",
-         None, [0.725, 0.799, 0.808], "{:.3f}", 2,
+         None, [0.793, 0.814, 0.823], "{:.3f}", 2,
          "1.000 is a perfect match with the person's script."),
         ("How well the script follows the action, on difficult videos",
-         None, [0.508, 0.745, 0.741], "{:.3f}", 1,
-         "The two most difficult videos of the eleven. Version 0.1.0 fails "
-         "on them."),
+         None, [0.720, 0.777, 0.787], "{:.3f}", 2,
+         "The two most difficult videos of the eleven. Every version is "
+         "further behind here, and Version 0.1.0 the furthest."),
         ("Changes of direction at the correct time",
-         None, [83.2, 87.0, 87.7], "{:.1f}%", 2,
+         None, [83.3, 86.9, 87.8], "{:.1f}%", 2,
          "Correct to 1/15 second. The two newer versions are close here."),
     ]),
     ("MOVEMENT THAT IS NOT IN THE PERSON'S SCRIPT", WARN, SQUINT,
      "Longer is worse. A white line marks the person's own count.", [
         ("Changes of direction that the person did not make",
-         None, [29.7, 36.9, 34.9], "{:.1f}%", 0,
+         None, [28.2, 35.7, 34.0], "{:.1f}%", 0,
          "A version that creates more movements finds more of the person's "
          "movements, and also makes more that the person did not."),
         ("Fast movements in each minute",
-         22.5, [4.2, 34.6, 31.3], "{:.1f}", None,
+         22.5, [4.2, 34.3, 31.3], "{:.1f}", None,
          "Version 0.1.0 creates far fewer than the person. The two newer "
          "versions create more, and Version 0.3.0 is the nearer of them."),
         ("Sudden fast movements where the video is slow, in each minute",
-         0.5, [7.4, 23.9, 14.4], "{:.1f}", None,
+         0.5, [7.4, 23.8, 14.4], "{:.1f}", None,
          "The person creates almost none. Every version creates too many. "
          "Version 0.3.0 creates 40% fewer than Version 0.2.0."),
     ]),
