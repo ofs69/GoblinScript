@@ -1,0 +1,1571 @@
+<!doctype html>
+<!-- The review page. Served from the exe (include_str!), loopback only.
+     Self-contained on purpose: no external requests of any kind -- the video,
+     the script and this page all come from 127.0.0.1. -->
+<html>
+<head>
+<meta charset="utf-8">
+<title>GoblinScript review</title>
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml;base64,PHN2ZyB4bWxucz0naHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmcnIHZpZXdCb3g9JzAgMCA2NCA2NCc+PHBhdGggZD0nTTIyIDIwIEwyNiAzIEwzMSAxOCBaJyBmaWxsPScjN2NiMzQyJy8+IDxwYXRoIGQ9J000MiAyMCBMMzggMyBMMzMgMTggWicgZmlsbD0nIzdjYjM0MicvPiA8cGF0aCBkPSdNMjAgNDYgTDkgMzYgTTQ0IDQ2IEw1NSAzNicgc3Ryb2tlPScjN2NiMzQyJyBzdHJva2Utd2lkdGg9JzQnIHN0cm9rZS1saW5lY2FwPSdyb3VuZCcvPiA8cGF0aCBkPSdNMjggNTUgTDI2IDYyIE0zNiA1NSBMMzggNjInIHN0cm9rZT0nIzdjYjM0Micgc3Ryb2tlLXdpZHRoPSc0JyBzdHJva2UtbGluZWNhcD0ncm91bmQnLz4gPHJlY3QgeD0nMjQnIHk9JzQwJyB3aWR0aD0nMTYnIGhlaWdodD0nMTUnIHJ4PSc0JyBmaWxsPScjOGJjMzRhJy8+IDxlbGxpcHNlIGN4PSczMicgY3k9JzI4JyByeD0nMTcnIHJ5PScxNScgZmlsbD0nIzhiYzM0YScvPiA8Y2lyY2xlIGN4PScyNScgY3k9JzI3JyByPSc0Ljc1JyBmaWxsPScjZjFmOGU5Jy8+IDxjaXJjbGUgY3g9JzM5JyBjeT0nMjcnIHI9JzQuNzUnIGZpbGw9JyNmMWY4ZTknLz4gPGNpcmNsZSBjeD0nMjUuNScgY3k9JzI3LjUnIHI9JzIuNScgZmlsbD0nIzFiM2ExMicvPiA8Y2lyY2xlIGN4PSczOC41JyBjeT0nMjcuNScgcj0nMi41JyBmaWxsPScjMWIzYTEyJy8+IDxlbGxpcHNlIGN4PSczMicgY3k9JzMzJyByeD0nMicgcnk9JzInIGZpbGw9JyM2ODlmMzgnLz4gPHBhdGggZD0nTTI2IDM3LjUgUTMyIDQyLjUgMzggMzcuNScgZmlsbD0nbm9uZScgc3Ryb2tlPScjMWIzYTEyJyBzdHJva2Utd2lkdGg9JzIuNCcgc3Ryb2tlLWxpbmVjYXA9J3JvdW5kJy8+PC9zdmc+">
+<style>
+  /* The phosphor scheme, shipped as the fallback. The exe overrides every one
+     of these from /state so the page wears whatever palette the picker is on
+     (amber, CGA, mono) -- a page served by a build that predates theming, or
+     one whose fetch failed, still renders correctly in green. */
+  :root {
+    --bg: #0e130c; --panel: #151d14; --panel-2: #1b241a; --edge: #4c6144;
+    --hi: #8bc34a; --hi-bright: #b6e07a; --hi-dim: #bcda90;
+    --ink: #f4f9f0; --ink-soft: #d3e2c7; --fang: #f1f8e9;
+    --danger: #ef5350; --danger-soft: #ef9a9a;
+    --cool: 150,180,200;
+    /* The chrome typeface. Monospace everywhere -- every string on this page
+       is a control, label or readout, and the workbench is an instrument
+       panel; a proportional font would make it a web form. */
+    --chrome: ui-monospace, "Cascadia Mono", Consolas, "DejaVu Sans Mono", monospace;
+  }
+  * { box-sizing: border-box; margin: 0; }
+  html, body { height: 100%; }
+  body { background: var(--bg); color: var(--ink); font: 14px/1.5 var(--chrome);
+         display: flex; flex-direction: column;
+         background-image: radial-gradient(130% 90% at 50% -20%,
+                           color-mix(in srgb, var(--hi) 12%, var(--bg)) 0%, var(--bg) 62%); }
+  :focus-visible { outline: 2px solid var(--hi-bright); outline-offset: 1px; }
+
+  /* ---- CRT dressing ----
+     Scanlines over the CHROME only. They never go near #stage or the canvases:
+     this page's whole job is judging stroke timing against real footage, and a
+     decorative overlay on the instrument would be a lie about what the user is
+     looking at. The layer is inert to the mouse.
+
+     Kept faint on purpose -- one dark row in four at low alpha, which reads as
+     texture at a glance and disappears once you are actually working. The first
+     pass (one row in three at .22, half opacity) was about four times this and
+     fought the text. Set opacity to 0 to remove the effect entirely. */
+  body::after { content: ''; position: fixed; inset: 0; pointer-events: none; z-index: 9;
+                background: repeating-linear-gradient(180deg,
+                            rgba(0,0,0,.13) 0px, rgba(0,0,0,.13) 1px,
+                            transparent 1px, transparent 4px);
+                mix-blend-mode: multiply; opacity: .3; }
+  /* the stage punches back through the scanlines: video and canvases stay clean */
+  #stage, #timeline, #strip { position: relative; z-index: 10; }
+  @media (prefers-reduced-motion: reduce) { body::after { display: none; } }
+
+  /* The shape language below is one rule, applied everywhere: hard 2px bevels,
+     no radius, no blur. RAISED (`outset`) means pressable, SUNKEN (`inset`)
+     means either a field you type into or a control already engaged -- the
+     oldest convention in desktop UI, and the fastest way to tell them apart. */
+
+  /* ---- title bar ----
+     A window chrome bar in inverse video, the way an application announced
+     itself before it had a tab. No minimise/maximise/close: the page is one
+     view served by a running exe, so those would be painted-on controls that
+     cannot do the thing they depict. Every control on this page works. */
+  .brandbar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+              padding: 5px clamp(10px, 3vw, 20px);
+              background: var(--hi-dim); color: #000;
+              border-bottom: 2px solid var(--edge); }
+  .brandbar .logo { flex: 0 0 auto; width: 22px; height: 22px; }
+  .brandbar h1 { font-size: 15px; font-weight: 700; letter-spacing: .06em;
+                 text-transform: uppercase; color: #000; }
+  .brandbar h1 .sub { color: #000; opacity: .72; font-weight: 700; margin-left: 4px; }
+  .brandbar .tag { font: 11px/1 var(--chrome); color: #000; opacity: .72; }
+  .brandbar .hint { margin-left: auto; font-size: 11px; color: #000; opacity: .72; }
+  /* the rail switch lives in the title bar, the one place that is neither
+     stage nor rail and so cannot vanish with either */
+  .brandbar button { background: rgba(0,0,0,.09); color: #000; border: 2px outset #0006;
+                     font: 11px var(--chrome); padding: 3px 9px; letter-spacing: .05em; }
+  .brandbar button:hover { background: rgba(0,0,0,.18); color: #000; }
+  @media (max-width: 900px) {
+    .brandbar .tag, .brandbar .hint { display: none; }
+    .brandbar button { margin-left: auto; }
+  }
+
+  /* ---- shell: stage column + rail ----
+     Two columns under the title bar. Everything that is not the footage --
+     knobs, recipe, clip list, the session buttons -- sits in the RAIL, a
+     fixed-width column beside the stage, because vertical space is the scarce
+     axis here and a 16:9 frame leaves the window's flanks empty anyway. The
+     stage column then owns the full height, and the only things sharing it
+     with the video are the two instruments that must be read against it. */
+  #shell { flex: 1 1 auto; min-height: 0; display: flex; align-items: stretch; }
+  /* min-height/min-width 0 is load-bearing on both children: without it a flex
+     item keeps its content size and pushes the other one off-screen. */
+  main { flex: 1 1 auto; min-width: 0; min-height: 0; overflow-y: auto;
+         padding: 10px clamp(10px, 1.4vw, 18px) 8px;
+         display: flex; flex-direction: column; gap: 8px; }
+  /* the stage takes whatever vertical space is left after the two instruments
+     and their caption, and keeps a floor so a very short window degrades to a
+     small video rather than to none */
+  #stage { position: relative; background: #000; border: 2px inset var(--edge);
+           border-radius: 0; overflow: hidden;
+           flex: 1 1 auto; min-height: 140px; display: flex; }
+  /* fill the stage and letterbox to aspect (object-fit); the native controls sit
+     at the element's bottom edge, so they stay on-screen at any window size */
+  video { display: block; width: 100%; height: 100%; object-fit: contain;
+          background: #000; }
+  /* the simulator: a stroker's position, riding the video's right edge */
+  #sim { position: absolute; top: 6%; bottom: 12%; right: 16px; width: 22px; pointer-events: none; }
+  /* the simulator reads as a segment gauge: square ends, hard edges, no glow */
+  #simtrack { position: absolute; inset: 0; background: rgba(255,255,255,.12);
+              border: 1px solid var(--edge); border-radius: 0; }
+  #simfill { position: absolute; left: 2px; right: 2px; bottom: 2px; height: 0;
+             background: color-mix(in srgb, var(--hi) 34%, transparent); border-radius: 0; }
+  #simhandle { position: absolute; left: -3px; right: -3px; height: 8px;
+               background: var(--hi-bright); border-radius: 0; box-shadow: 0 0 0 1px #000; }
+  #simpos { position: absolute; top: 100%; margin-top: 6px; width: 100%; text-align: center;
+            font: 700 12px var(--chrome); color: var(--hi-bright); text-shadow: 0 0 4px #000; }
+  #note { position: absolute; left: 12px; top: 10px; padding: 2px 8px; font-size: 11px;
+          color: var(--ink); background: rgba(0,0,0,.75); border: 1px solid var(--edge); }
+  /* the auto-crop readout: the rect the goblins were actually shown, drawn the
+     way autocrop.py's render draws it -- the frame outside it dimmed (the huge
+     spread shadow, clipped by the stage), the rect itself in that same green.
+     Purely a readout, so pointer-events stay off and the video's own controls
+     underneath keep taking clicks. */
+  #croprect { position: absolute; pointer-events: none; border: 2px solid #7cb342;
+              box-shadow: 0 0 0 9999px rgba(0,0,0,.62); }
+  /* live model-confidence readout, top-right of the frame (clears the sim) */
+  #confnote { position: absolute; right: 46px; top: 10px; padding: 2px 8px;
+              font: 700 12px var(--chrome); letter-spacing: .04em;
+              color: var(--hi-bright); background: rgba(0,0,0,.7);
+              border: 1px solid var(--edge); text-shadow: 0 0 4px #000; }
+  .hidden { display: none; }
+  /* full-clip scrub timeline: the whole duration at a glance (the confidence
+     band), click or drag anywhere to seek. The strip below is the +-15 s detail.
+     flex: 0 0 auto keeps them at their set heights so only the stage shrinks,
+     and the heights themselves are a share of the window: on a laptop screen
+     the instruments give the frame back the pixels they cost on a desktop. */
+  #timeline { display: block; width: 100%; height: clamp(32px, 4.4vh, 46px);
+              background: var(--panel);
+              border: 2px inset var(--edge); border-radius: 0; cursor: pointer;
+              touch-action: none; flex: 0 0 auto; }
+  #strip { display: block; width: 100%; height: clamp(78px, 12.5vh, 124px);
+           background: var(--panel);
+           border: 2px inset var(--edge); border-radius: 0; cursor: crosshair;
+           flex: 0 0 auto; }
+  /* silent until there is something to say -- an always-reserved error row is
+     16px the video never gets back */
+  #err { color: var(--danger-soft); font-size: 12px; }
+  #err:empty { display: none; }
+  /* the wait a long video makes visible: a note, not a curtain -- the knobs
+     stay live because turning another one supersedes the style in flight */
+  #stylingNote { color: var(--hi); font-size: 12px; }
+  #stylingNote.hidden { display: none; }
+  body.styling #strip, body.styling #timeline { opacity: .55; transition: opacity .12s; }
+
+  /* ---- rail: the goblins' workbench ----
+     A column of stacked sections -- clip list, recipe, fine-tuning toggle,
+     knob groups, key legend -- ending in the two session buttons. It scrolls
+     on its own, which is the point: revealed fine-tuning rows or a twenty-clip
+     batch grow the RAIL, never at the stage's expense. */
+  #rail { flex: 0 0 clamp(272px, 23vw, 348px); min-height: 0; overflow-y: auto;
+          background: var(--panel); border-left: 2px solid var(--edge);
+          padding: 12px 14px 0; display: flex; flex-direction: column; gap: 14px; }
+  body.rail-off #rail { display: none; }
+  .sec { display: flex; flex-direction: column; gap: 7px; }
+  .sec-h { font-size: 11px; letter-spacing: .08em; text-transform: uppercase;
+           color: var(--hi-dim); border-bottom: 1px dashed var(--edge); padding-bottom: 3px; }
+  #flags { font: 12px/1.45 var(--chrome); color: var(--ink-soft); word-break: break-word; }
+  /* the knob bank: one titled group per DECISION (script / strokes / holds /
+     stillness / gap filler), each with a one-line hint saying what it does.
+     A group's raw numbers live INSIDE it behind the single fine-tuning
+     toggle, so a number always sits next to the preset it overrides --
+     the old detached "advanced" pile is what made the page unreadable. */
+  .knobs { display: flex; flex-direction: column; gap: 14px; }
+  .group { display: flex; flex-direction: column; gap: 7px; }
+  .group-label { font-size: 11px; letter-spacing: .08em; text-transform: uppercase;
+                 color: var(--hi-dim); border-bottom: 1px dashed var(--edge); padding-bottom: 3px; }
+  .group-knobs { display: flex; flex-direction: column; gap: 9px; }
+  .group .hint { font-size: 11px; color: var(--ink-soft); opacity: .8;
+                 margin-top: -3px; }
+  /* a group the current style does not consume: visibly inert, never
+     silently ignored (level has no holds / stillness machinery) */
+  .group .only { display: none; }
+  .group.inert .only { display: inline; color: var(--hi-dim); }
+  .group.inert .group-knobs { opacity: .4; pointer-events: none; }
+  /* per-control help: a small ? opening the shared modal -- reliable on
+     touch and never truncated, unlike native title hovers. It leads the
+     control's own row, so it sits beside the thing it explains. The size is
+     fixed through the press: the workbench's button padding shift would
+     squash a 15px circle into an ellipse. */
+  .help { flex: 0 0 auto; width: 15px; height: 15px; padding: 0;
+          border: 1px solid var(--edge); border-radius: 50%;
+          background: transparent; color: var(--hi-dim); cursor: help;
+          font: 700 10px/13px var(--chrome); }
+  .help:hover { color: var(--hi-bright); border-color: var(--hi-dim); }
+  .help:active { padding: 0; border-style: inset; }
+  #helpModal { position: fixed; inset: 0; z-index: 100;
+               background: rgba(0,0,0,.55);
+               display: flex; align-items: center; justify-content: center; }
+  #helpModal.hidden { display: none; }
+  #helpBox { max-width: 430px; margin: 16px; padding: 14px 16px;
+             background: var(--panel); border: 2px outset var(--edge);
+             display: flex; flex-direction: column; gap: 9px; }
+  #helpBody { font-size: 12.5px; line-height: 1.55; color: var(--ink-soft);
+              white-space: pre-line; margin: 0; }
+  #helpClose { align-self: flex-end; }
+  /* fine-tuning rows: hidden until the one toggle shows them. Revealed, each
+     sits in its own recessed well -- a darker ground than the panel the preset
+     rows stand on, plus a lit stripe down its edge -- so a group still reads
+     presets first and numbers second. The separation is the BACKGROUND and not
+     dimming: these rows are where the typing happens, and a faded field is a
+     field you distrust. */
+  .knobs .fine { display: none; }
+  .knobs.showfine .fine:not(.hidden) { display: flex;
+                 background: color-mix(in srgb, var(--hi) 7%, var(--bg));
+                 border-left: 2px solid var(--hi); padding: 6px 8px; }
+  /* one control per line, each as wide as the rail: nothing here is worth a
+     second column at this width, and equal widths make the bank scannable */
+  #rail select, #rail input[type=range], #rail input[type=number] { width: 100%; min-width: 0; }
+  /* in a field row the controls share what the leading ? leaves */
+  #rail .field > select, #rail .field > input { flex: 1 1 0; }
+  /* the key legend: what the arrows do, parked where it cannot cost the video
+     any height */
+  .keylist { display: flex; flex-direction: column; gap: 5px;
+             font-size: 11px; color: var(--ink-soft); }
+  .keylist div { display: flex; align-items: center; gap: 6px; }
+  kbd { font: 11px/1.4 var(--chrome); background: var(--panel-2);
+        border: 2px outset var(--edge); border-radius: 0; padding: 0 5px; color: var(--ink); }
+  /* the session buttons stay put at the rail's foot while the rest scrolls */
+  .rail-foot { position: sticky; bottom: 0; margin-top: auto;
+               background: var(--panel); border-top: 2px solid var(--edge);
+               padding: 10px 0 12px; display: flex; flex-direction: column; gap: 8px; }
+  /* the one fine-tuning toggle: reveals every group's raw numbers in place.
+     A number differing from its preset's own value IS the override; equal
+     means "on the preset". It wears the page's raised button chrome rather
+     than a bare word -- it is the control that changes what the bank shows,
+     and it spans the bank it opens. Open, it is sunken and lit like a
+     current clip tab: one convention on this page for "engaged". */
+  .advanced { padding-bottom: 2px; }
+  #advToggle { width: 100%; text-align: left; color: var(--hi-dim); }
+  #advToggle:hover { color: var(--hi-bright); }
+  #advToggle[aria-expanded="true"] { border-style: inset; color: var(--fang);
+               background: color-mix(in srgb, var(--hi) 28%, var(--panel-2)); }
+  .knobs label { display: flex; flex-direction: column; gap: 5px;
+                 font-size: 12px; color: var(--ink-soft); }
+  .knobs .field { display: flex; align-items: center; gap: 6px; }
+  .knobs .sub { text-transform: none; letter-spacing: 0; font-weight: 400;
+                 color: var(--ink-soft); }
+  /* Fields are SUNKEN (inset), controls are RAISED (outset) -- the oldest
+     convention in desktop UI, and the fastest way to tell what you can type in
+     from what you can press. */
+  select, input[type=number] { background: var(--panel-2); color: var(--ink);
+                               border: 2px inset var(--edge); border-radius: 0; padding: 4px 6px;
+                               font: 13px var(--chrome); text-transform: none; }
+  select:hover, input:hover { border-color: var(--hi-dim); }
+  input[type=number] { width: 62px; }
+  input[type=range] { width: 150px; accent-color: var(--hi-bright); }
+  .dash { color: var(--ink-soft); }
+  #ival, #fillMWVal { color: var(--hi-bright); font: 700 13px var(--chrome); text-transform: none; }
+  button { background: var(--panel-2); color: var(--ink); border: 2px outset var(--edge);
+           border-radius: 0; padding: 5px 12px; cursor: pointer; font: 12px var(--chrome);
+           text-transform: uppercase; letter-spacing: .05em; }
+  button:hover { border-color: var(--hi-dim); color: var(--hi-bright); }
+  /* the press: the control actually sinks, and its label moves with it */
+  button:active { border-style: inset; padding: 6px 11px 4px 13px; }
+  /* the clip list: one full-width row per script, the current one sunken */
+  #tabs { display: flex; flex-direction: column; gap: 4px; }
+  #tabs.hidden { display: none; }
+  #tabs button { width: 100%; text-align: left; padding: 4px 8px;
+                 text-transform: none; letter-spacing: 0; }
+  #tabs button.cur { background: color-mix(in srgb, var(--hi) 28%, var(--panel-2));
+                     border-style: inset; color: var(--fang); }
+  #tabs .n { color: var(--ink-soft); font-size: 11px; margin-left: 3px; }
+  .rail-foot button { width: 100%; }
+  #done { background: color-mix(in srgb, var(--hi) 42%, var(--panel-2));
+          color: var(--fang); font-weight: 700; padding: 9px 18px; }
+  #done:hover { background: color-mix(in srgb, var(--hi) 58%, var(--panel-2)); color: var(--fang); }
+  #done:active { padding: 10px 17px 8px 19px; }
+  /* the armed second-click state -- warning-coloured, so "click again" reads */
+  #done.confirm { background: color-mix(in srgb, var(--danger) 55%, var(--panel-2));
+                  border-color: var(--danger); }
+  /* strip caption: playback speed + the two heatmap legends */
+  .stripcap { display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
+              font-size: 12px; color: var(--ink-soft); padding: 2px 2px 0; }
+  .heatleg { display: inline-flex; align-items: center; gap: 7px; margin-left: auto; }
+  .heatbar { width: 96px; height: 8px; border-radius: 0; border: 1px solid var(--edge);
+             background: linear-gradient(90deg,#33531d,#7cb342,#cddc39,#ffb300,#ef5350); }
+  /* the confidence band's own legend -- a cool slate, distinct from the warm
+     speed heatmap so the two strip layers never read as the same scale */
+  #confcap { display: inline-flex; align-items: center; gap: 7px; }
+  #confcap b { font-weight: 700; }
+  /* the crop legend: the switch for the overlay, the swatch that names the
+     timeline's crop band, and what the plan decided */
+  #cropcap { display: inline-flex; align-items: center; gap: 7px; }
+  #cropcap label { display: inline-flex; align-items: center; gap: 5px; cursor: pointer; }
+  #cropcap b { font-weight: 700; color: var(--ink); }
+  .cropbar { width: 22px; height: 6px; border: 1px solid var(--edge); background: #7cb342; }
+  .confbar { width: 72px; height: 8px; border-radius: 0; border: 1px solid var(--edge);
+             background: linear-gradient(90deg, rgba(var(--cool),.12), rgba(var(--cool),.85)); }
+  #closed { margin: auto; text-align: center; padding: 80px 20px; color: var(--ink-soft); font-size: 16px; }
+
+  /* Narrow windows have no flanks to spend, so the rail lies back down under
+     the stage as a dock: the same sections, wrapped into rows, capped at a
+     share of the height and scrolling within it. */
+  @media (max-width: 1040px) {
+    #shell { flex-direction: column; }
+    #rail { flex: 0 0 auto; max-height: 42vh;
+            border-left: 0; border-top: 2px solid var(--edge);
+            padding: 10px clamp(10px, 3vw, 20px) 0; }
+    .knobs { flex-direction: row; flex-wrap: wrap; gap: 8px 18px; }
+    .knobs .group { flex: 1 1 180px; }
+    #tabs { flex-direction: row; flex-wrap: wrap; }
+    #tabs button { width: auto; }
+    .keylist { flex-direction: row; flex-wrap: wrap; gap: 6px 14px; }
+    .rail-foot { flex-direction: row; }
+  }
+</style>
+</head>
+<body>
+  <header class="brandbar">
+    <!-- the ASCII mascot (theme.rs) and the app icon (assets/make_icon.py) are
+         this same goblin, stood there: narrow ears, arms up and out, legs. -->
+    <svg class="logo" viewBox="0 0 64 64" aria-hidden="true">
+      <path d="M22 20 L26 3 L31 18 Z" fill="#7cb342"/>
+      <path d="M42 20 L38 3 L33 18 Z" fill="#7cb342"/>
+      <path d="M20 46 L9 36 M44 46 L55 36" stroke="#7cb342" stroke-width="4" stroke-linecap="round"/>
+      <path d="M28 55 L26 62 M36 55 L38 62" stroke="#7cb342" stroke-width="4" stroke-linecap="round"/>
+      <rect x="24" y="40" width="16" height="15" rx="4" fill="#8bc34a"/>
+      <ellipse cx="32" cy="28" rx="17" ry="15" fill="#8bc34a"/>
+      <circle cx="25" cy="27" r="4.75" fill="#f1f8e9"/>
+      <circle cx="39" cy="27" r="4.75" fill="#f1f8e9"/>
+      <circle cx="25.5" cy="27.5" r="2.5" fill="#1b3a12"/>
+      <circle cx="38.5" cy="27.5" r="2.5" fill="#1b3a12"/>
+      <ellipse cx="32" cy="33" rx="2" ry="2" fill="#689f38"/>
+      <path d="M26 37.5 Q32 42.5 38 37.5" fill="none" stroke="#1b3a12" stroke-width="2.4" stroke-linecap="round"/>
+    </svg>
+    <h1>GoblinScript <span class="sub" data-t="page.review">review</span></h1>
+    <span class="tag" data-t="page.tagline">made by real goblins</span>
+    <span class="hint" data-t="page.hint">every change rewrites the script instantly</span>
+    <button id="railToggle" type="button" aria-expanded="true"
+            data-t-title="page.workbench.title"
+            title="fold the workbench away and give the frame the whole window">◧ <span
+            data-t="page.workbench">workbench</span></button>
+  </header>
+
+  <div id="shell">
+    <main>
+      <div id="stage">
+        <video id="vid" controls preload="metadata"></video>
+        <div id="sim">
+          <div id="simtrack"><div id="simfill"></div><div id="simhandle"></div></div>
+          <div id="simpos">–</div>
+        </div>
+        <div id="croprect" class="hidden"></div>
+        <div id="note" class="hidden" data-t="page.workingcopy">480p working copy</div>
+        <div id="confnote" class="hidden"></div>
+      </div>
+      <canvas id="timeline" data-t-title="page.timeline.title" title="click or drag to scrub"></canvas>
+      <canvas id="strip"></canvas>
+      <div class="stripcap">
+        <span data-t="page.speed">speed
+          <select id="speed">
+            <option value="0.25">0.25×</option>
+            <option value="0.5">0.5×</option>
+            <option value="0.75">0.75×</option>
+            <option value="1" selected>1×</option>
+            <option value="1.25">1.25×</option>
+            <option value="1.5">1.5×</option>
+            <option value="2">2×</option>
+          </select>
+        </span>
+        <span id="confcap" class="hidden"></span>
+        <span id="cropcap" class="hidden">
+          <label for="cropShow"><input type="checkbox" id="cropShow" checked> <span
+              data-t="page.crop">crop</span></label>
+          <span class="cropbar"></span>
+          <b id="cropnum"></b>
+          <button type="button" class="help" data-h="cropShow">?</button>
+        </span>
+        <span class="heatleg"><span data-t="page.slow">slow</span> <span class="heatbar"></span> <span
+            data-t="page.fast">fast</span></span>
+      </div>
+      <div id="stylingNote" class="hidden" data-t="page.styling">the goblins are re-scrawling this script&hellip;</div>
+      <div id="err"></div>
+    </main>
+
+    <aside id="rail">
+      <!-- the batch's other scripts, when there are any: style is per script,
+           so this is also what says which one the knobs below are editing -->
+      <div id="tabs" class="sec hidden"></div>
+      <div class="sec">
+        <span class="sec-h" data-t="page.recipe">goblin recipe</span>
+        <span id="flags"></span>
+      </div>
+      <!-- One group per DECISION; a group's raw numbers sit inside it as
+           .fine rows the one toggle below reveals, so every number reads
+           next to the preset it overrides. Every label names its control
+           through `for`: the row's leading ? is a labelable descendant too,
+           so without it a click on the caption would open help instead of
+           reaching the knob. -->
+      <div class="advanced">
+        <button id="advToggle" type="button" aria-expanded="false"
+                data-t-title="page.fine.title"
+                title="Show every group's raw numbers, in place. A number that differs from its preset's value becomes the override the recipe echoes.">▸ <span
+                data-t="page.fine">fine tuning</span></button>
+      </div>
+      <div class="knobs">
+        <div class="group">
+          <span class="group-label" data-t="page.group.script">script</span>
+          <span class="hint" data-t="page.group.script.hint">what gets written, and device limits</span>
+          <div class="group-knobs">
+            <label for="style" data-t="page.knob.style">style
+              <span class="field"><button type="button" class="help" data-h="style">?</button>
+              <select id="style">
+                <option value="composed" data-t="page.style.composed">composed — full decode</option>
+                <option value="level" data-t="page.style.level">level — steady &amp; simple</option>
+              </select></span>
+              <span id="styleHint" class="hint"></span>
+            </label>
+            <label class="fine" for="rlo" data-t="page.knob.range">range <span class="sub" data-t="page.knob.range.sub">lo–hi</span>
+              <span class="field"><button type="button" class="help" data-h="range">?</button>
+              <input id="rlo" type="number" min="0" max="99" step="1" value="0">
+              <span class="dash">–</span><input id="rhi" type="number" min="1" max="100" step="1" value="100"></span>
+            </label>
+            <label class="fine" for="mspeed" data-t="page.knob.maxspeed">max speed <span class="sub" data-t="page.knob.maxspeed.sub">(0 = off)</span>
+              <span class="field"><button type="button" class="help" data-h="mspeed">?</button>
+              <input id="mspeed" type="number" min="0" step="10" value="0"></span>
+            </label>
+          </div>
+        </div>
+        <div class="group">
+          <span class="group-label" data-t="page.group.strokes">strokes</span>
+          <span class="hint" data-t="page.group.strokes.hint">amplitude, and how even the reach is</span>
+          <div class="group-knobs">
+            <label for="intensity" data-t="page.knob.intensity">intensity <span id="ival">1.0</span>
+              <span class="field"><button type="button" class="help" data-h="intensity">?</button>
+              <input id="intensity" type="range" min="0.5" max="2" step="0.1" value="1"></span>
+            </label>
+            <label for="depth" data-t="page.knob.depth">depth uniformity
+              <span class="field"><button type="button" class="help" data-h="depth">?</button>
+              <select id="depth">
+                <option value="off" data-t="page.preset.off">off</option><option value="subtle" data-t="page.preset.subtle">subtle</option><option value="even" data-t="page.preset.even">even</option><option value="locked" data-t="page.preset.locked">locked</option>
+              </select></span>
+            </label>
+            <label id="depthKnob" class="fine hidden" for="depthDose" data-t="page.knob.depthnums">depth numbers <span class="sub" data-t="page.knob.depthnums.sub">dose·window s</span>
+              <span class="field"><button type="button" class="help" data-h="depthKnob">?</button>
+              <input id="depthDose" type="number" min="0" max="1" step="0.05" value="0.6">
+              <span class="dash">·</span><input id="depthWin" type="number" min="0" max="60" step="1" value="10"></span>
+            </label>
+          </div>
+        </div>
+        <div class="group" id="gHolds">
+          <span class="group-label" data-t="page.group.holds">holds</span>
+          <span class="hint" data-t="page.group.holds.hint">parking plateaus at their level<span class="only" data-t="page.composedonly"> — composed style only</span></span>
+          <div class="group-knobs">
+            <label for="dwells" data-t="page.knob.dwells">dwells
+              <span class="field"><button type="button" class="help" data-h="dwells">?</button>
+              <select id="dwells">
+                <option value="cautious" data-t="page.preset.cautious">cautious</option><option value="normal" data-t="page.preset.normal">normal</option><option value="eager" data-t="page.preset.eager">eager</option>
+              </select></span>
+            </label>
+            <label class="fine" for="dwellsNum" data-t="page.knob.dwellconf">dwell confidence <span class="sub">(0..1)</span>
+              <span class="field"><button type="button" class="help" data-h="dwellsNum">?</button>
+              <input id="dwellsNum" type="number" min="0" max="1" step="0.05" value="0.50"></span>
+            </label>
+          </div>
+        </div>
+        <div class="group" id="gStill">
+          <span class="group-label" data-t="page.group.stillness">stillness</span>
+          <span class="hint" data-t="page.group.stillness.hint">quiet passages hold flat instead of jittering<span class="only" data-t="page.composedonly"> — composed style only</span></span>
+          <div class="group-knobs">
+            <label for="stillness" data-t="page.knob.stillness">stillness
+              <span class="field"><button type="button" class="help" data-h="stillness">?</button>
+              <select id="stillness">
+                <option value="low" data-t="page.preset.low">low</option><option value="normal" data-t="page.preset.normal">normal</option><option value="high" data-t="page.preset.high">high</option>
+              </select></span>
+            </label>
+            <label class="fine" for="stillNum" data-t="page.knob.stillfloor">still floor <span class="sub">(pos/s)</span>
+              <span class="field"><button type="button" class="help" data-h="stillNum">?</button>
+              <input id="stillNum" type="number" min="0" max="60" step="1" value="14"></span>
+            </label>
+          </div>
+        </div>
+        <div class="group">
+          <span class="group-label" data-t="page.group.filler">gap filler</span>
+          <span class="hint" data-t="page.group.filler.hint">replace motion-free passages with a rhythm</span>
+          <div class="group-knobs">
+            <label for="fillerSel" data-t="page.knob.filler">filler
+              <span class="field"><button type="button" class="help" data-h="fillerSel">?</button>
+              <select id="fillerSel">
+                <option value="off" data-t="page.preset.off">off</option><option value="subtle" data-t="page.preset.subtle">subtle</option><option value="steady" data-t="page.preset.steady">steady</option><option value="bursts" data-t="page.preset.bursts">bursts</option><option value="custom" data-t="page.preset.custom">custom</option>
+              </select></span>
+            </label>
+            <label for="fillGap" data-t="page.knob.gap">gap before filling <span class="sub" data-t="page.knob.gap.sub">(s, 0 = off)</span>
+              <span class="field"><button type="button" class="help" data-h="fillGap">?</button>
+              <input id="fillGap" type="number" min="0" max="600" step="1" value="0"></span>
+            </label>
+            <label id="fillKnob" class="hidden dep-filler" for="fillRate" data-t="page.knob.rhythm">rhythm <span class="sub" data-t="page.knob.rhythm.sub">strokes/min · ±units</span>
+              <span class="field"><button type="button" class="help" data-h="fillKnob">?</button>
+              <input id="fillRate" type="number" min="1" max="300" step="1" value="40">
+              <span class="dash">·</span><input id="fillAmp" type="number" min="1" max="50" step="1" value="15"></span>
+            </label>
+            <label class="dep-filler" for="fillModelW" data-t="page.knob.modelw">model influence <span id="fillMWVal">1.0</span>
+              <span class="field"><button type="button" class="help" data-h="fillModelW">?</button>
+              <input id="fillModelW" type="range" min="0" max="1" step="0.05" value="1"></span>
+            </label>
+            <label class="fine dep-filler" for="fillMinReal" data-t="page.knob.keepreal">keep real motion <span class="sub" data-t="page.knob.keepreal.sub">≥ s · ≥ pos/s</span>
+              <span class="field"><button type="button" class="help" data-h="fillReal">?</button>
+              <input id="fillMinReal" type="number" min="0" max="30" step="0.5" value="1">
+              <span class="dash">·</span><input id="fillRealV" type="number" min="0" max="300" step="5" value="45"></span>
+            </label>
+            <label class="fine dep-filler" for="fillBridge" data-t="page.knob.garbage">replace garbage up to <span class="sub">(s)</span>
+              <span class="field"><button type="button" class="help" data-h="fillBridge">?</button>
+              <input id="fillBridge" type="number" min="0" max="60" step="0.5" value="5"></span>
+            </label>
+            <label class="fine dep-filler" for="fillRamp" data-t="page.knob.seamfade">seam fade <span class="sub" data-t="page.knob.seamfade.sub">(s, 0 = auto)</span>
+              <span class="field"><button type="button" class="help" data-h="fillRamp">?</button>
+              <input id="fillRamp" type="number" min="0" max="30" step="0.5" value="0"></span>
+            </label>
+            <label class="fine dep-filler" for="fillSway" data-t="page.knob.sway">sway <span class="sub" data-t="page.knob.sway.sub">± frac · period s</span>
+              <span class="field"><button type="button" class="help" data-h="fillSway">?</button>
+              <input id="fillSway" type="number" min="0" max="1" step="0.05" value="0.15">
+              <span class="dash">·</span><input id="fillSwayS" type="number" min="1" max="120" step="1" value="16"></span>
+            </label>
+            <label class="fine dep-filler" for="fillPattern" data-t="page.knob.pattern">pattern
+              <span class="field"><button type="button" class="help" data-h="fillPattern">?</button>
+              <select id="fillPattern"><option value="steady" data-t="page.preset.steady">steady</option><option value="burst" data-t="page.preset.burst">burst</option></select></span>
+            </label>
+            <label class="fine" id="fillBurstKnob" for="fillBurst" data-t="page.knob.burst">burst <span class="sub" data-t="page.knob.burst.sub">strokes · rest s</span>
+              <span class="field"><button type="button" class="help" data-h="fillBurst">?</button>
+              <input id="fillBurst" type="number" min="1" max="30" step="1" value="4">
+              <span class="dash">·</span><input id="fillRest" type="number" min="0" max="30" step="0.5" value="2"></span>
+            </label>
+          </div>
+        </div>
+      </div>
+      <!-- one shared help modal, filled from the HELP map on ? click -->
+      <div id="helpModal" class="hidden">
+        <div id="helpBox">
+          <span class="sec-h" id="helpTitle"></span>
+          <p id="helpBody"></p>
+          <button id="helpClose" type="button" data-t="page.close">close</button>
+        </div>
+      </div>
+      <div class="sec keys">
+        <span class="sec-h" data-t="page.keys">keys</span>
+        <div class="keylist">
+          <div><kbd>←</kbd> <kbd>→</kbd> <span data-t="page.key.frame">frame</span></div>
+          <div><kbd>↑</kbd> <kbd>↓</kbd> <span data-t="page.key.reversal">reversal</span></div>
+          <div><kbd data-t="page.key.space">space</kbd> <span data-t="page.key.playpause">play / pause</span></div>
+          <div><kbd>,</kbd> <kbd>.</kbd> <span data-t="page.key.speed">slower / faster</span></div>
+          <div><kbd>c</kbd> <span data-t="page.key.crop">crop overlay</span></div>
+        </div>
+      </div>
+      <div class="rail-foot">
+        <button id="reset" type="button" data-t="page.reset">reset to draft</button>
+        <button id="done" data-t="page.done">Done — dismiss the goblins</button>
+      </div>
+    </aside>
+  </div>
+<script>
+'use strict';
+const $ = id => document.getElementById(id);
+
+// ---- language ----------------------------------------------------------------
+// The page speaks whatever the picker that launched it does: `/lang` is the
+// active catalog with English merged underneath, so every key resolves and the
+// page needs no fallback of its own.
+//
+// The MARKUP still carries the English text. That is not duplication for its
+// own sake -- it is what the page reads as before the catalog arrives, and what
+// it keeps if the fetch ever fails. Translating is then a matter of replacing
+// text that is already correct.
+let L = {};
+function T(key, args) {
+  let s = L[key];
+  if (s === undefined) return key;
+  if (args) for (const k in args) s = s.split('{' + k + '}').join(args[k]);
+  return s;
+}
+async function fetchLang() {
+  try {
+    const r = await (await fetch('/lang')).json();
+    L = r.strings || {};
+    document.documentElement.lang = r.code || 'en-US';
+  } catch (e) { /* the markup's own English stands */ }
+  applyLang();
+}
+// Replace each marked element's own leading TEXT, leaving its child elements
+// where they are -- a label is "name <span class=sub>unit</span> <span
+// class=field>...", and setting textContent would take the control with it.
+// Surrounding whitespace is kept, because it is what separates the label from
+// the span after it.
+//
+// This is why a translated `<option>` carries an explicit `value`: the words
+// are what changes here, and an option with no attribute takes its value FROM
+// its words. The value is the identity the recipe travels under -- `steady`,
+// `cautious` -- and it is the same in every language. `lang.rs` holds the test.
+function applyLang() {
+  for (const el of document.querySelectorAll('[data-t]')) {
+    const s = L[el.dataset.t];
+    if (s === undefined) continue;
+    const n = [...el.childNodes].find(x => x.nodeType === 3 && x.textContent.trim());
+    if (!n) { el.textContent = s; continue; }
+    n.textContent = n.textContent.match(/^\s*/)[0] + s + n.textContent.match(/\s*$/)[0];
+  }
+  for (const el of document.querySelectorAll('[data-t-title]')) {
+    const s = L[el.dataset.tTitle];
+    if (s !== undefined) el.title = s;
+  }
+  // the two toggles carry a caret their JS rewrites, so they are re-labelled
+  // through the same path that changes them
+  labelRail();
+  labelAdv();
+  document.title = T('page.title');
+}
+const vid = $('vid'), strip = $('strip'), sctx = strip.getContext('2d');
+const timeline = $('timeline'), tlctx = timeline.getContext('2d');
+
+let state = null;     // /state payload
+let cur = 0;          // selected clip
+let actions = [];     // current clip's actions, sorted by .at
+let triedFallback = false;
+// model confidence for the current clip: the raw per-row [0,1] track (nulls
+// where unknown), a smoothed copy for display, its row clock, and the clip
+// mean. All null when the bundle has no conf head -- the UI then hides itself.
+let confSmooth = null;
+let confFps = 30;
+let confRow0 = 0;   // ms of row 0 -- the row clock's offset, not zero
+let confMean = null;
+let fillerSpans = [];   // [ms0, ms1] ranges the filler stage replaced
+let artifactSpans = []; // [ms0, ms1] ranges reading hot under the rarity prior
+// the auto-crop plan for the current clip: segments carrying the rect as
+// fractions of the frame, and the two numbers the crop stage printed. Null
+// when the draft ran uncropped, which is the flat path -- the UI hides itself.
+let cropSegs = [];
+let cropInfo = null;
+// the green autocrop.py's own render draws the rect in: the crop reads the
+// same in both tools, and stays distinct from whatever palette is themed in.
+const CROP_GREEN = '#7cb342';
+const ARTIFACT_AMBER = '#e0a04a'; // the rarity band: suspect, not condemned
+
+// ---- palette -------------------------------------------------------------
+// The page ships the phosphor scheme in its stylesheet and takes whatever the
+// exe is actually running from /state. The canvases cannot read CSS variables,
+// so `C` mirrors the same values as plain strings for them to draw with; it
+// starts populated with the stylesheet's own defaults, which is what keeps a
+// missing or older `theme` payload from drawing an invisible strip.
+const C = {
+  hi: '#8bc34a',
+  hiBright: '#b6e07a',
+  ink: '#f4f9f0',
+  inkSoft: '#d3e2c7',
+  edge: '#4c6144',
+  cool: '150,180,200',
+};
+/** rgba() from the cool slate at alpha `a` -- the confidence band is that one
+ *  hue at a dozen different weights. */
+function coolA(a) { return 'rgba(' + C.cool + ',' + a + ')'; }
+/** rgba() from any '#rrggbb' at alpha `a`. */
+function hexA(hex, a) {
+  const n = parseInt(hex.slice(1), 16);
+  return 'rgba(' + ((n >> 16) & 255) + ',' + ((n >> 8) & 255) + ',' + (n & 255) + ',' + a + ')';
+}
+function applyTheme(t) {
+  if (!t) return;
+  const root = document.documentElement;
+  for (const [k, v] of Object.entries(t)) {
+    if (k !== 'name') root.style.setProperty('--' + k, v);
+  }
+  if (t.hi) C.hi = t.hi;
+  if (t['hi-bright']) C.hiBright = t['hi-bright'];
+  if (t.ink) C.ink = t.ink;
+  if (t['ink-soft']) C.inkSoft = t['ink-soft'];
+  if (t.edge) C.edge = t.edge;
+  if (t.cool) C.cool = t.cool;
+}
+
+// ---- data ----------------------------------------------------------------
+async function fetchState() {
+  state = await (await fetch('/state')).json();
+  applyTheme(state.theme);
+  renderTabs();
+}
+async function fetchScript() {
+  const s = await (await fetch('/script/' + cur)).json();
+  actions = s.actions || [];
+  // filled spans (ms ranges the background rhythm replaced) ride the
+  // script's metadata, so a restyle refreshes them with the actions
+  fillerSpans = (s.metadata && s.metadata.filler) || [];
+  // rarity spans (action sequences almost absent from authored scripts,
+  // the artifact instrument) ride the metadata the same way
+  artifactSpans = (s.metadata && s.metadata.artifacts) || [];
+  // The written funscript is always on the SOURCE clock, so that the file
+  // beside a VR video is usable as-is. The video this page streams is the
+  // drafted clip, which for a trimmed VR source starts later -- so rebase the
+  // actions onto the clip's clock ONCE here, and every reader below (sim,
+  // timeline, strip, action stepping) stays on one clock without knowing why.
+  const t0 = (state && state.clips[cur] && state.clips[cur].t0_ms) || 0;
+  if (t0) {
+    actions = actions.map(a => ({ ...a, at: a.at - t0 }));
+    fillerSpans = fillerSpans.map(([a, b]) => [a - t0, b - t0]);
+    artifactSpans = artifactSpans.map(([a, b]) => [a - t0, b - t0]);
+  }
+}
+// Confidence is fixed by the frozen trunk -- fetched once per clip, never on a
+// re-style. `conf: null` (no head in the bundle) hides the readout entirely.
+async function fetchConf() {
+  confSmooth = null; confMean = null;
+  try {
+    const c = await (await fetch('/conf/' + cur)).json();
+    if (c && Array.isArray(c.conf)) {
+      confFps = c.fps || 30;
+      confRow0 = c.row0 || 0;
+      confSmooth = smoothConf(c.conf, confFps);
+      let sum = 0, n = 0;
+      for (const v of c.conf) if (v != null) { sum += v; n++; }
+      confMean = n ? sum / n : null;
+    }
+  } catch (e) { /* older bundle: leave confidence off */ }
+  updateConfUI();
+}
+// The head is supervised on its WINDOW MEAN (its target is the per-window phase
+// correlation), so a ~1.5 s moving average is the quantity it actually models;
+// the raw per-row track is noise around it. Nulls are skipped, not treated as 0.
+function smoothConf(arr, fps) {
+  const n = arr.length, half = Math.max(1, Math.round(fps * 0.75));
+  const ps = new Float64Array(n + 1), pc = new Float64Array(n + 1);
+  for (let i = 0; i < n; i++) {
+    const v = arr[i];
+    ps[i + 1] = ps[i] + (v == null ? 0 : v);
+    pc[i + 1] = pc[i] + (v == null ? 0 : 1);
+  }
+  const out = new Array(n).fill(null);
+  for (let i = 0; i < n; i++) {
+    const a = Math.max(0, i - half), b = Math.min(n, i + half + 1);
+    const cnt = pc[b] - pc[a];
+    out[i] = cnt > 0 ? (ps[b] - ps[a]) / cnt : null;
+  }
+  return out;
+}
+function confAt(ms) {
+  if (!confSmooth) return null;
+  const i = Math.round((ms - confRow0) / 1000 * confFps);
+  return (i >= 0 && i < confSmooth.length) ? confSmooth[i] : null;
+}
+// A confidence-only scale: green (agrees) -> amber -> red (unsure). Deliberately
+// NOT the strip's warm speed ramp -- these bins mirror the head's correlation
+// target, and the number is labelled "confidence" so the colour can't be read
+// as speed.
+function confColor(v) {
+  if (v == null) return 'var(--ink-soft)';
+  if (v >= 0.7) return C.hiBright;
+  if (v >= 0.45) return '#cddc39';
+  return '#ef9a9a';
+}
+function updateConfUI() {
+  const cap = $('confcap'), note = $('confnote');
+  const on = !!confSmooth;
+  cap.classList.toggle('hidden', !on);
+  note.classList.toggle('hidden', !on);
+  if (!on) return;
+  cap.innerHTML = '';
+  cap.append(T('page.confidence') + ' ');
+  const bar = document.createElement('span'); bar.className = 'confbar';
+  cap.append(bar);
+  if (confMean != null) {
+    const avg = document.createElement('b');
+    avg.textContent = T('page.conf.avg', { pct: Math.round(confMean * 100) });
+    avg.style.color = confColor(confMean);
+    cap.append(avg);
+  }
+}
+function drawConfReadout(ms) {
+  if (!confSmooth) return;
+  const v = confAt(ms);
+  const note = $('confnote');
+  note.textContent = v == null
+    ? T('page.conf.unknown')
+    : T('page.conf.at', { pct: Math.round(v * 100) });
+  note.style.color = confColor(v);
+}
+
+// ---- auto-crop overlay -----------------------------------------------------
+// What `--autocrop` decided, shown on the picture it decided it from: outside
+// the rect dimmed, the rect in green. The plan is fixed by the frozen mask net,
+// so a re-style never touches it -- it rides /state with the clip.
+//
+// A rect covering the frame is the plan saying "the whole picture", which is
+// nothing to draw: those segments show no overlay and no band.
+function isWholeFrame(r) { return r.w >= 0.999 && r.h >= 0.999; }
+/** The segment covering `ms`; segments start at their own time and run to the
+ *  next one, the first at 0. */
+function cropAt(ms) {
+  if (!cropSegs.length) return null;
+  let lo = 0, hi = cropSegs.length - 1;
+  while (hi - lo > 1) {
+    const m = (lo + hi) >> 1;
+    if (cropSegs[m].t_ms <= ms) lo = m; else hi = m;
+  }
+  return cropSegs[hi].t_ms <= ms ? cropSegs[hi] : cropSegs[lo];
+}
+function updateCropUI() {
+  const cap = $('cropcap');
+  cap.classList.toggle('hidden', !cropInfo);
+  if (!cropInfo) { $('croprect').classList.add('hidden'); return; }
+  const cropped = cropSegs.filter(s => !isWholeFrame(s)).length;
+  $('cropnum').textContent = cropped === 0
+    ? T('page.crop.whole')
+    : T('page.crop.reading', {
+        zoom: cropInfo.zoom.toFixed(2),
+        n: cropped,
+        total: cropSegs.length,
+        esc: Math.round(cropInfo.escape_share * 100),
+      });
+}
+// The video letterboxes inside the stage (object-fit: contain), so the rect's
+// fractions land on the PICTURE's box, not the element's.
+function pictureBox() {
+  const vw = vid.videoWidth, vh = vid.videoHeight;
+  if (!vw || !vh) return null;
+  const cw = vid.clientWidth, ch = vid.clientHeight;
+  const s = Math.min(cw / vw, ch / vh);
+  const w = vw * s, h = vh * s;
+  return { x: vid.offsetLeft + (cw - w) / 2, y: vid.offsetTop + (ch - h) / 2, w, h };
+}
+function drawCrop(ms) {
+  const el = $('croprect');
+  const r = (cropInfo && $('cropShow').checked) ? cropAt(ms) : null;
+  const box = r && !isWholeFrame(r) ? pictureBox() : null;
+  if (!box) { el.classList.add('hidden'); return; }
+  el.style.left = (box.x + r.x * box.w) + 'px';
+  el.style.top = (box.y + r.y * box.h) + 'px';
+  el.style.width = (r.w * box.w) + 'px';
+  el.style.height = (r.h * box.h) + 'px';
+  el.classList.remove('hidden');
+}
+$('cropShow').addEventListener('change', () => drawCrop(vid.currentTime * 1000));
+
+// Preset dropdowns carry each option's resolved number in brackets --
+// "normal (0.50)" -- built from /state so "normal" reflects the real manifest.
+function fmtPreset(v) { return v < 3 ? Number(v).toFixed(2) : String(Math.round(v)); }
+function fillPreset(id, map, order) {
+  const s = $(id);
+  s.innerHTML = '';
+  for (const k of order) {
+    const o = document.createElement('option');
+    o.value = k;
+    // The preset's own NAME is translated; the number beside it is not a word.
+    o.textContent = T('page.preset.' + k) + ' (' + fmtPreset(map[k]) + ')';
+    s.append(o);
+  }
+}
+// The depth dropdown carries each preset's two numbers -- "even (0.60·10s)" --
+// built from /state, and an "off" entry that carries none.
+function fillDepth() {
+  const s = $('depth');
+  s.innerHTML = '';
+  const off = document.createElement('option');
+  off.value = 'off'; off.textContent = T('page.preset.off');
+  s.append(off);
+  for (const k of ['subtle', 'even', 'locked']) {
+    const b = state.presets.depth[k];
+    const o = document.createElement('option');
+    o.value = k;
+    o.textContent = T('page.preset.' + k) +
+      ' (' + Number(b.depth_dose).toFixed(2) + '·' + Math.round(b.depth_window) + 's)';
+    s.append(o);
+  }
+}
+function buildPresetOptions() {
+  fillPreset('dwells', state.presets.dwells, ['cautious', 'normal', 'eager']);
+  fillPreset('stillness', state.presets.stillness, ['low', 'normal', 'high']);
+  fillDepth();
+}
+
+// Seed every control from a params object -- used both to reflect the current
+// clip and to restore its draft defaults (reset). Presets sit in the visible
+// groups; their raw numbers sit in the same group behind the fine-tuning
+// toggle and show the clip's override when set, else the preset's own
+// resolved value.
+function seedControls(p) {
+  $('style').value = p.style ?? 'composed';
+  updateStyleUI();
+  $('dwells').value = p.dwells;
+  $('stillness').value = p.stillness;
+  const pk = (p.dwell_ramp != null) ? p.dwell_ramp : state.presets.dwells[p.dwells];
+  const se = (p.still_eps != null) ? p.still_eps : state.presets.stillness[p.stillness];
+  $('dwellsNum').value = Number(pk).toFixed(2);
+  $('stillNum').value = Math.round(se);
+  $('intensity').value = p.intensity;
+  $('ival').textContent = Number(p.intensity).toFixed(1);
+  $('rlo').value = p.range[0];
+  $('rhi').value = p.range[1];
+  $('mspeed').value = p.max_speed;
+  $('depth').value = p.depth ?? 'off';
+  seedDepthKnobs(p.depth ?? 'off', p);
+  // filler: the gap is the switch (0 = off), and everything downstream of it
+  // appears only while it is on -- syncFillerKnobs, below
+  $('fillGap').value = p.filler_gap_s ?? 0;
+  $('fillRate').value = p.filler_rate ?? 40;
+  $('fillAmp').value = p.filler_amp ?? 15;
+  $('fillMinReal').value = p.filler_min_real_s ?? 1;
+  $('fillRealV').value = p.filler_real_v ?? 45;
+  $('fillModelW').value = p.filler_model_w ?? 1;
+  $('fillMWVal').textContent = Number(p.filler_model_w ?? 1).toFixed(2);
+  $('fillRamp').value = p.filler_ramp_s ?? 0;
+  $('fillBridge').value = p.filler_max_bridge_s ?? 5;
+  $('fillSway').value = p.filler_sway ?? 0.15;
+  $('fillSwayS').value = p.filler_sway_s ?? 16;
+  $('fillPattern').value = p.filler_pattern ?? 'steady';
+  $('fillBurst').value = p.filler_burst ?? 4;
+  $('fillRest').value = p.filler_rest_s ?? 2;
+  $('fillerSel').value = fillerPresetOf(p);
+  syncFillerKnobs();
+}
+
+// A knob whose switch is off is HIDDEN, not dimmed. The dependencies are the
+// recipe's own (style.rs echoes the filler block only at gap > 0, and the
+// burst numbers only off pattern burst), so what the bank shows is what the
+// command line would carry: a field that cannot reach the decode is a lie
+// about what will run. Reads the controls, so it serves both the round trip
+// and the immediate change.
+function syncFillerKnobs() {
+  const on = parseFloat($('fillGap').value) > 0;
+  for (const el of document.querySelectorAll('.dep-filler'))
+    el.classList.toggle('hidden', !on);
+  $('fillBurstKnob').classList.toggle('hidden',
+    !(on && $('fillPattern').value === 'burst'));
+}
+
+// which preset the clip's numbers ARE, if any -- the select shows 'custom'
+// for a dialled-in combination and 'off' at gap 0
+function fillerPresetOf(p) {
+  if (!(p.filler_gap_s > 0)) return 'off';
+  for (const [name, b] of Object.entries(state.presets.filler || {})) {
+    if (Math.abs(p.filler_gap_s - b.filler_gap_s) < 1e-9 &&
+        Math.abs(p.filler_rate - b.filler_rate) < 1e-9 &&
+        Math.abs(p.filler_amp - b.filler_amp) < 1e-9 &&
+        p.filler_pattern === b.filler_pattern) return name;
+  }
+  return 'custom';
+}
+
+// controls + recipe reflect the CURRENT clip -- style is per script
+function syncControls() {
+  const c = state.clips[cur];
+  seedControls(c.params);
+  $('flags').textContent = c.flags;
+}
+
+// Depth's two numbers: the clip's override when set, else the selected
+// preset's own values; the pair hides entirely while depth is off.
+function seedDepthKnobs(d, p) {
+  const on = d !== 'off';
+  $('depthKnob').classList.toggle('hidden', !on);
+  if (!on) return;
+  const b = state.presets.depth[d];
+  $('depthDose').value = (p && p.depth_dose != null) ? p.depth_dose : b.depth_dose;
+  $('depthWin').value = (p && p.depth_window != null) ? p.depth_window : b.depth_window;
+}
+
+// ---- clips ----------------------------------------------------------------
+function renderTabs() {
+  const t = $('tabs');
+  t.classList.toggle('hidden', state.clips.length < 2);
+  t.innerHTML = '';
+  const h = document.createElement('span');
+  h.className = 'sec-h';
+  h.textContent = T('page.scripts', { n: state.clips.length });
+  t.append(h);
+  state.clips.forEach((c, i) => {
+    const b = document.createElement('button');
+    b.className = i === cur ? 'cur' : '';
+    b.innerHTML = '';
+    b.append(c.name, ' ');
+    const n = document.createElement('span');
+    n.className = 'n';
+    n.textContent = T('page.tab.actions', { n: c.actions });
+    b.append(n);
+    b.onclick = () => selectClip(i);
+    t.append(b);
+  });
+}
+async function selectClip(i) {
+  cur = i;
+  triedFallback = false;
+  const c = state.clips[i];
+  vid.src = c.video;
+  $('note').classList.toggle('hidden', c.original);
+  // the crop plan is per clip and fixed by the frozen mask net
+  cropInfo = c.crop || null;
+  cropSegs = (cropInfo && cropInfo.segs) || [];
+  updateCropUI();
+  renderTabs();
+  syncControls();  // this clip's own knobs + recipe
+  updateStylingUI();
+  await Promise.all([fetchScript(), fetchConf()]);
+}
+// the probe can be wrong about one machine's browser: one retry on the
+// normalized copy, which plays everywhere
+vid.addEventListener('error', () => {
+  const c = state.clips[cur];
+  if (!triedFallback && c.fallback) {
+    triedFallback = true;
+    const t = vid.currentTime;
+    vid.src = c.fallback;
+    vid.currentTime = t;
+    $('note').classList.remove('hidden');
+  }
+});
+
+// ---- params ----------------------------------------------------------------
+// A raw number that still equals its preset's own value is NOT an override --
+// return null so the flags line stays on the preset instead of echoing a
+// redundant number. `presetVal` is the preset's resolved value for that knob.
+function ovNum(id, presetVal) {
+  const v = parseFloat($(id).value);
+  return (Number.isFinite(v) && Math.abs(v - presetVal) > 1e-9) ? v : null;
+}
+// Depth's two numbers, off unless the preset is on (see ovNum for the
+// override rule).
+function depthBody() {
+  const d = $('depth').value;
+  const out = { depth: d, depth_dose: null, depth_window: null };
+  if (d === 'off') return out;
+  const b = state.presets.depth[d];
+  out.depth_dose = ovNum('depthDose', b.depth_dose);
+  out.depth_window = ovNum('depthWin', b.depth_window);
+  return out;
+}
+
+async function postParams() {
+  // the bank follows the switch on the click, not on the round trip
+  syncFillerKnobs();
+  const body = {
+    clip: cur,  // the change is for the current script only
+    style: $('style').value,
+    dwells: $('dwells').value,
+    stillness: $('stillness').value,
+    intensity: parseFloat($('intensity').value),
+    range: [parseFloat($('rlo').value), parseFloat($('rhi').value)],
+    max_speed: parseFloat($('mspeed').value),
+    // a raw number differing from its preset's value becomes the override; equal
+    // (or unchanged) sends null, keeping the clip on the preset
+    dwell_ramp: ovNum('dwellsNum', state.presets.dwells[$('dwells').value]),
+    still_eps: ovNum('stillNum', state.presets.stillness[$('stillness').value]),
+    ...depthBody(),
+    filler_gap_s: parseFloat($('fillGap').value) || 0,
+    filler_min_real_s: parseFloat($('fillMinReal').value) || 0,
+    filler_real_v: parseFloat($('fillRealV').value) || 0,
+    filler_model_w: parseFloat($('fillModelW').value),
+    filler_rate: parseFloat($('fillRate').value) || 40,
+    filler_amp: parseFloat($('fillAmp').value) || 15,
+    filler_ramp_s: parseFloat($('fillRamp').value) || 0,
+    filler_max_bridge_s: parseFloat($('fillBridge').value) || 0,
+    filler_sway: parseFloat($('fillSway').value) || 0,
+    filler_sway_s: parseFloat($('fillSwayS').value) || 16,
+    filler_pattern: $('fillPattern').value,
+    filler_burst: parseInt($('fillBurst').value, 10) || 4,
+    filler_rest_s: parseFloat($('fillRest').value) || 0,
+  };
+  // The post RETURNS at once: styling a two-hour script is seconds of work, and
+  // the goblins do it on their own thread so the video keeps streaming and Done
+  // keeps answering. What comes back is the state with this clip marked
+  // `styling`, and the file on disk is still the PREVIOUS answer until that
+  // clears -- so the wait below is what makes the strip and the timeline agree
+  // with the knobs rather than trail them by one change.
+  const mine = ++styleEpoch;
+  const r = await fetch('/params', { method: 'POST', body: JSON.stringify(body) });
+  if (!r.ok) { $('err').textContent = await r.text(); return; }
+  $('err').textContent = '';
+  state = await r.json();
+  renderTabs();
+  syncControls();
+  await settle(mine);
+}
+// Every re-style asks for a number; only the NEWEST one's answer is worth
+// reading. Turning a second knob while the first is still styling supersedes it
+// on the goblins' side too, so a superseded waiter simply stops waiting.
+let styleEpoch = 0;
+async function settle(epoch) {
+  const clip = cur;
+  for (;;) {
+    if (epoch !== styleEpoch) return;   // a newer change owns the answer now
+    if (!state.clips[clip] || !state.clips[clip].styling) break;
+    await new Promise(r => setTimeout(r, 120));
+    state = await (await fetch('/state')).json();
+    if (epoch !== styleEpoch) return;
+    renderTabs();
+    updateStylingUI();
+  }
+  updateStylingUI();
+  if (state.error) { $('err').textContent = state.error; return; }
+  if (clip !== cur) return;             // the user moved to another script meanwhile
+  await fetchScript();  // the file on disk is this change's, now
+}
+// The one thing the page says while it waits: the knobs stay live (a change
+// mid-style is the supersede case, which is cheaper than making the user wait
+// to ask for it), so this is a note and never a lock.
+function updateStylingUI() {
+  const busy = !!(state.clips[cur] && state.clips[cur].styling);
+  document.body.classList.toggle('styling', busy);
+  $('stylingNote').classList.toggle('hidden', !busy);
+}
+// the raw-number knobs + intensity/range restyle on change
+for (const id of ['intensity', 'rlo', 'rhi', 'mspeed', 'dwellsNum', 'stillNum',
+                  'depthDose', 'depthWin', 'fillGap', 'fillRate', 'fillAmp',
+                  'fillMinReal', 'fillRealV', 'fillModelW', 'fillRamp', 'fillBridge',
+                  'fillSway', 'fillSwayS', 'fillPattern', 'fillBurst',
+                  'fillRest'])
+  $(id).addEventListener('change', postParams);
+// the filler preset seeds its bundle's numbers, then restyles; 'custom' is
+// a label, not an action
+$('fillerSel').addEventListener('change', () => {
+  const sel = $('fillerSel').value;
+  if (sel === 'custom') return;
+  if (sel === 'off') {
+    $('fillGap').value = 0;
+  } else {
+    const b = state.presets.filler[sel];
+    $('fillGap').value = b.filler_gap_s;
+    $('fillRate').value = b.filler_rate;
+    $('fillAmp').value = b.filler_amp;
+    $('fillPattern').value = b.filler_pattern;
+  }
+  postParams();
+});
+// switching a preset re-seeds ITS raw numbers first (a stale override from the
+// previous preset must not carry over), then restyles
+$('dwells').addEventListener('change', () => {
+  $('dwellsNum').value = Number(state.presets.dwells[$('dwells').value]).toFixed(2);
+  postParams();
+});
+$('stillness').addEventListener('change', () => {
+  $('stillNum').value = Math.round(state.presets.stillness[$('stillness').value]);
+  postParams();
+});
+// ---- help modal -------------------------------------------------------------
+// One entry per control, keyed by the ? button's `data-h`. The prose lives in
+// the catalog like every other word on this page -- it is the longest writing
+// the app does, and the part a reader most needs in their own language.
+for (const b of document.querySelectorAll('.help'))
+  b.addEventListener('click', e => {
+    e.preventDefault();
+    e.stopPropagation();
+    $('helpTitle').textContent = T('page.help.' + b.dataset.h + '.title');
+    $('helpBody').textContent = T('page.help.' + b.dataset.h + '.body');
+    $('helpModal').classList.remove('hidden');
+  });
+$('helpModal').addEventListener('click', e => {
+  if (e.target.id === 'helpModal' || e.target.id === 'helpClose')
+    $('helpModal').classList.add('hidden');
+});
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape') $('helpModal').classList.add('hidden');
+});
+
+// which knobs the chosen style actually consumes -- level has no holds /
+// stillness machinery, so those groups grey out instead of silently
+// ignoring input (depth uniformity and the gap filler apply to both)
+function updateStyleUI() {
+  const lvl = $('style').value === 'level';
+  $('gHolds').classList.toggle('inert', lvl);
+  $('gStill').classList.toggle('inert', lvl);
+  $('styleHint').textContent = T(lvl ? 'page.stylehint.level' : 'page.stylehint.composed');
+}
+$('style').addEventListener('change', () => { updateStyleUI(); postParams(); });
+$('depth').addEventListener('change', () => {
+  seedDepthKnobs($('depth').value, null);
+  postParams();
+});
+$('intensity').addEventListener('input',
+  () => $('ival').textContent = parseFloat($('intensity').value).toFixed(1));
+$('fillModelW').addEventListener('input',
+  () => $('fillMWVal').textContent = parseFloat($('fillModelW').value).toFixed(2));
+
+// The workbench switch: fold the rail away and the stage column takes the whole
+// window -- the review pass is mostly watching, and a knob is a thing you reach
+// for occasionally. The canvases re-back themselves off their own resize.
+function labelRail() {
+  const off = document.body.classList.contains('rail-off');
+  $('railToggle').textContent = (off ? '▸' : '◧') + ' ' + T('page.workbench');
+}
+$('railToggle').onclick = () => {
+  const off = document.body.classList.toggle('rail-off');
+  $('railToggle').setAttribute('aria-expanded', String(!off));
+  labelRail();
+};
+
+// the one disclosure: every group's raw numbers in place, folded away by default
+function labelAdv() {
+  const on = document.querySelector('.knobs').classList.contains('showfine');
+  $('advToggle').textContent = (on ? '▾' : '▸') + ' ' + T('page.fine');
+}
+$('advToggle').onclick = () => {
+  const on = document.querySelector('.knobs').classList.toggle('showfine');
+  $('advToggle').setAttribute('aria-expanded', String(on));
+  labelAdv();
+};
+
+// reset THIS clip's knobs to what the goblins first drafted (state carries the
+// pre-review defaults per clip). Seed the controls, then post like any change.
+$('reset').onclick = () => { seedControls(state.clips[cur].defaults); postParams(); };
+
+// Done is session-final (no reopen without a rerun), so the first click only
+// arms it -- a second click within 3 s actually finishes.
+let donePending = false, doneTimer = null;
+function disarmDone() {
+  donePending = false;
+  clearTimeout(doneTimer);
+  $('done').textContent = T('page.done');
+  $('done').classList.remove('confirm');
+}
+$('done').onclick = async () => {
+  if (!donePending) {
+    donePending = true;
+    $('done').textContent = T('page.done.confirm');
+    $('done').classList.add('confirm');
+    doneTimer = setTimeout(disarmDone, 3000);
+    return;
+  }
+  disarmDone();
+  try { await fetch('/done', { method: 'POST' }); } catch (e) { /* server already gone */ }
+  const closed = document.createElement('div');
+  closed.id = 'closed';
+  closed.append(T('page.closed'), document.createElement('br'), T('page.closed.tab'));
+  document.body.innerHTML = '';
+  document.body.append(closed);
+};
+
+// ---- playback speed --------------------------------------------------------
+// Slow-mo is the review workhorse: reversal timing against motion is hard to
+// judge at 1x. `,` / `.` step the ladder; the select mirrors it. playbackRate
+// resets when the <video> src swaps, so reapply on every load.
+const RATES = [0.25, 0.5, 0.75, 1, 1.25, 1.5, 2];
+let rate = 1;
+function applyRate() {
+  vid.playbackRate = rate;
+  $('speed').value = String(rate);
+}
+function stepRate(dir) {
+  let i = RATES.indexOf(rate);
+  if (i < 0) i = RATES.indexOf(1);
+  rate = RATES[Math.min(RATES.length - 1, Math.max(0, i + dir))];
+  applyRate();
+}
+$('speed').addEventListener('change', () => { rate = parseFloat($('speed').value); applyRate(); });
+vid.addEventListener('loadedmetadata', () => { vid.playbackRate = rate; });
+
+// ---- keyboard: step the video, jump between reversals ----------------------
+const FRAME = 1 / 30;  // ~one frame of the normalized copy
+function seekMs(ms) {
+  vid.pause();
+  const dur = isFinite(vid.duration) ? vid.duration : 1e9;
+  vid.currentTime = Math.min(Math.max(0, ms / 1000), dur);
+}
+function stepFrame(sign) {
+  vid.pause();
+  const dur = isFinite(vid.duration) ? vid.duration : 1e9;
+  vid.currentTime = Math.min(Math.max(0, vid.currentTime + sign * FRAME), dur);
+}
+// jump to the previous / next action -- reversal-to-reversal review
+function stepAction(dir) {
+  if (!actions.length) return;
+  const t = vid.currentTime * 1000;
+  if (dir > 0) {
+    const nx = actions.find(a => a.at > t + 1);
+    if (nx) seekMs(nx.at);
+  } else {
+    let pv = null;
+    for (const a of actions) { if (a.at < t - 1) pv = a; else break; }
+    if (pv) seekMs(pv.at);
+  }
+}
+document.addEventListener('keydown', e => {
+  // never steal keys from a control the user is editing
+  const tag = document.activeElement && document.activeElement.tagName;
+  if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') return;
+  // let space/enter still click a focused button (arrows here step the video)
+  if (tag === 'BUTTON' && (e.key === ' ' || e.key === 'Enter')) return;
+  // Keyed off the physical arrows + space ONLY -- never character keys like
+  // [ or ], which sit under different fingers (or behind AltGr) on QWERTZ /
+  // AZERTY / etc.
+  switch (e.key) {
+    case 'ArrowLeft':  stepFrame(-1); break;
+    case 'ArrowRight': stepFrame(1); break;
+    case 'ArrowUp':    stepAction(1); break;   // up = next action
+    case 'ArrowDown':  stepAction(-1); break;  // down = previous action
+    case ' ':          if (vid.paused) vid.play(); else vid.pause(); break;
+    case ',':          stepRate(-1); break;   // slower
+    case '.':          stepRate(1); break;    // faster
+    // the crop overlay covers the picture it describes, so it wants a switch
+    // right under the hand that is already stepping frames
+    case 'c': case 'C':
+      if (!cropInfo) return;
+      $('cropShow').checked = !$('cropShow').checked;
+      drawCrop(vid.currentTime * 1000);
+      break;
+    default: return;
+  }
+  e.preventDefault();
+});
+
+// ---- simulator ----------------------------------------------------------------
+// position at time t, exactly how a player interpolates a funscript:
+// linear between neighbouring actions, held flat outside them
+function posAt(ms) {
+  const a = actions;
+  if (!a.length) return null;
+  if (ms <= a[0].at) return a[0].pos;
+  if (ms >= a[a.length - 1].at) return a[a.length - 1].pos;
+  let lo = 0, hi = a.length - 1;
+  while (hi - lo > 1) {
+    const m = (lo + hi) >> 1;
+    if (a[m].at <= ms) lo = m; else hi = m;
+  }
+  const p = a[lo], q = a[hi];
+  return p.pos + (q.pos - p.pos) * (ms - p.at) / Math.max(1, q.at - p.at);
+}
+function drawSim(ms) {
+  const p = posAt(ms);
+  if (p === null) { $('simpos').textContent = '–'; return; }
+  const track = $('simtrack');
+  const h = track.clientHeight, hh = $('simhandle').offsetHeight;
+  const y = (h - hh) * (1 - p / 100);
+  $('simhandle').style.top = y + 'px';
+  $('simfill').style.height = Math.max(0, h - y - hh) + 'px';
+  $('simpos').textContent = Math.round(p);
+}
+
+// ---- full-clip scrub timeline -----------------------------------------------
+// The whole clip on one bar: the confidence band laid out across the entire
+// duration, click or drag anywhere to seek. Duration comes
+// from /state (authoritative), not vid.duration -- which is Infinity while a
+// range-streamed file is still loading its moov.
+function curDurationMs() {
+  const c = state && state.clips[cur];
+  if (c && c.duration_ms > 0) return c.duration_ms;
+  return (isFinite(vid.duration) && vid.duration > 0) ? vid.duration * 1000 : 1;
+}
+function fmtClock(ms) {
+  const s = Math.max(0, Math.floor(ms / 1000));
+  const m = Math.floor(s / 60), ss = String(s % 60).padStart(2, '0');
+  const hh = Math.floor(m / 60);
+  return hh > 0 ? hh + ':' + String(m % 60).padStart(2, '0') + ':' + ss : m + ':' + ss;
+}
+function sizeTimeline() {
+  const dpr = window.devicePixelRatio || 1;
+  timeline.width = timeline.clientWidth * dpr;
+  timeline.height = timeline.clientHeight * dpr;
+  tlctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+}
+function drawTimeline(ms) {
+  const w = timeline.clientWidth, h = timeline.clientHeight;
+  const dur = curDurationMs();
+  const X = t => t / dur * w;
+  tlctx.clearRect(0, 0, w, h);
+  // faint elapsed fill, so progress reads even where nothing else is drawn
+  const px = X(ms);
+  tlctx.fillStyle = hexA(C.hi, .10);
+  tlctx.fillRect(0, 0, px, h);
+  // minute (or 5-min) gridlines
+  tlctx.strokeStyle = 'rgba(255,255,255,.06)';
+  tlctx.beginPath();
+  const step = dur > 600000 ? 300000 : 60000;
+  for (let t = step; t < dur; t += step) { tlctx.moveTo(X(t), 8); tlctx.lineTo(X(t), h - 14); }
+  tlctx.stroke();
+  // filled spans along the top: where the background rhythm replaced the
+  // decode's output, so the filler knobs can be tuned by eye
+  if (fillerSpans && fillerSpans.length) {
+    tlctx.fillStyle = hexA(C.hiBright, .5);
+    for (const [a, b] of fillerSpans) {
+      const x0 = X(Math.max(0, a)), x1 = X(Math.min(dur, b));
+      if (x1 > x0) tlctx.fillRect(x0, 1, Math.max(1, x1 - x0), 3);
+    }
+  }
+  // rarity spans under the filler band: action sequences the authored
+  // corpus almost never writes (metadata.artifacts, the artifact
+  // instrument) -- where to LOOK during review, never a verdict
+  if (artifactSpans && artifactSpans.length) {
+    tlctx.fillStyle = hexA(ARTIFACT_AMBER, .6);
+    for (const [a, b] of artifactSpans) {
+      const x0 = X(Math.max(0, a)), x1 = X(Math.min(dur, b));
+      if (x1 > x0) tlctx.fillRect(x0, 10, Math.max(1, x1 - x0), 3);
+    }
+  }
+  // cropped spans just under the filler band: where the goblins were shown a
+  // rect instead of the whole frame, each span one shot (rects change only at
+  // detected cuts), with a tick where the rect changed
+  if (cropSegs.length) {
+    for (let i = 0; i < cropSegs.length; i++) {
+      const s = cropSegs[i];
+      if (isWholeFrame(s)) continue;
+      const end = i + 1 < cropSegs.length ? cropSegs[i + 1].t_ms : dur;
+      const x0 = X(Math.max(0, s.t_ms)), x1 = X(Math.min(dur, end));
+      if (x1 <= x0) continue;
+      tlctx.fillStyle = hexA(CROP_GREEN, .55);
+      tlctx.fillRect(x0, 5, Math.max(1, x1 - x0), 3);
+      tlctx.fillStyle = CROP_GREEN;
+      tlctx.fillRect(x0, 5, 1, 6);
+    }
+  }
+  // confidence band along the bottom -- height + alpha grow with certainty, so
+  // the shaky stretches of the whole clip show up as low, faint gaps
+  if (confSmooth) {
+    for (let x = 0; x < w; x++) {
+      const t = (x + 0.5) / w * dur;
+      const i = Math.round((t - confRow0) / 1000 * confFps);
+      if (i < 0 || i >= confSmooth.length) continue;
+      const v = confSmooth[i];
+      if (v == null) continue;
+      const bh = 14 * v;
+      tlctx.fillStyle = coolA((0.08 + 0.4 * v).toFixed(3));
+      tlctx.fillRect(x, h - bh, 1, bh);
+    }
+  }
+  // playhead: a bright line + a little top wedge you can grab
+  tlctx.strokeStyle = hexA(C.ink, .9);
+  tlctx.lineWidth = 1;
+  tlctx.beginPath(); tlctx.moveTo(px, 0); tlctx.lineTo(px, h); tlctx.stroke();
+  tlctx.fillStyle = C.hiBright;
+  tlctx.beginPath(); tlctx.moveTo(px - 4, 0); tlctx.lineTo(px + 4, 0); tlctx.lineTo(px, 6); tlctx.closePath(); tlctx.fill();
+  // clock: elapsed / total, bottom-right
+  tlctx.font = '700 11px ui-monospace, monospace';
+  tlctx.textBaseline = 'alphabetic';
+  const label = fmtClock(ms) + ' / ' + fmtClock(dur);
+  const tw = tlctx.measureText(label).width;
+  tlctx.fillStyle = 'rgba(0,0,0,.5)';
+  tlctx.fillRect(w - tw - 12, h - 17, tw + 9, 15);
+  tlctx.fillStyle = C.inkSoft;
+  tlctx.fillText(label, w - tw - 8, h - 5);
+}
+let tlDrag = false;
+function tlSeek(clientX) {
+  const r = timeline.getBoundingClientRect();
+  const frac = Math.min(1, Math.max(0, (clientX - r.left) / r.width));
+  seekMs(frac * curDurationMs());
+}
+timeline.addEventListener('pointerdown', e => {
+  tlDrag = true; timeline.setPointerCapture(e.pointerId); tlSeek(e.clientX); e.preventDefault();
+});
+timeline.addEventListener('pointermove', e => { if (tlDrag) tlSeek(e.clientX); });
+timeline.addEventListener('pointerup', () => { tlDrag = false; });
+timeline.addEventListener('pointercancel', () => { tlDrag = false; });
+
+// ---- script strip ----------------------------------------------------------------
+const WINDOW_MS = 30000;  // +-15 s around the playhead
+// speed (pos-units/s) -> a cool-to-hot colour, so the strip reads as a heatmap
+// of the script's own intensity. ~500 u/s is already a fast stroke; the ramp
+// saturates there.
+const HEAT = [[0, '#33531d'], [0.35, '#7cb342'], [0.6, '#cddc39'], [0.8, '#ffb300'], [1, '#ef5350']];
+function lerpHex(a, b, f) {
+  const pa = parseInt(a.slice(1), 16), pb = parseInt(b.slice(1), 16);
+  const r = Math.round((pa >> 16) + ((pb >> 16) - (pa >> 16)) * f);
+  const g = Math.round(((pa >> 8) & 255) + (((pb >> 8) & 255) - ((pa >> 8) & 255)) * f);
+  const bl = Math.round((pa & 255) + ((pb & 255) - (pa & 255)) * f);
+  return 'rgb(' + r + ',' + g + ',' + bl + ')';
+}
+function heat(speed) {
+  const t = Math.max(0, Math.min(1, speed / 500));
+  for (let i = 1; i < HEAT.length; i++) {
+    if (t <= HEAT[i][0]) {
+      const f = (t - HEAT[i - 1][0]) / (HEAT[i][0] - HEAT[i - 1][0] || 1);
+      return lerpHex(HEAT[i - 1][1], HEAT[i][1], f);
+    }
+  }
+  return HEAT[HEAT.length - 1][1];
+}
+function sizeStrip() {
+  const dpr = window.devicePixelRatio || 1;
+  strip.width = strip.clientWidth * dpr;
+  strip.height = strip.clientHeight * dpr;
+  sctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+}
+// Both canvases are backed in DEVICE pixels sized from their CSS box, so every
+// change to that box has to re-back them. The box moves for reasons a window
+// resize never reports -- the rail folding away, a clip list growing, the
+// vh-based heights settling -- so watch the elements themselves.
+const canvasBoxes = new ResizeObserver(() => { sizeStrip(); sizeTimeline(); });
+canvasBoxes.observe(strip);
+canvasBoxes.observe(timeline);
+function drawStrip(ms) {
+  const w = strip.clientWidth, h = strip.clientHeight;
+  const t0 = ms - WINDOW_MS / 2, t1 = ms + WINDOW_MS / 2;
+  const X = t => (t - t0) / WINDOW_MS * w;
+  const Y = p => 6 + (h - 12) * (1 - p / 100);
+  sctx.clearRect(0, 0, w, h);
+  // second ticks
+  sctx.strokeStyle = 'rgba(255,255,255,.05)';
+  sctx.beginPath();
+  for (let t = Math.ceil(t0 / 5000) * 5000; t <= t1; t += 5000) {
+    sctx.moveTo(X(t), 0); sctx.lineTo(X(t), h);
+  }
+  sctx.stroke();
+  // confidence band -- a cool slate underlay along the bottom; height and alpha
+  // both grow with certainty, so an unsure passage reads as a low, faint floor.
+  // Drawn before the script line so the line always stays on top of it.
+  if (confSmooth) {
+    const CONF_H = 16;
+    for (let x = 0; x < w; x++) {
+      const t = t0 + (x + 0.5) / w * WINDOW_MS;
+      const i = Math.round((t - confRow0) / 1000 * confFps);
+      if (i < 0 || i >= confSmooth.length) continue;
+      const v = confSmooth[i];
+      if (v == null) continue;
+      const bh = CONF_H * v;
+      sctx.fillStyle = coolA((0.1 + 0.5 * v).toFixed(3));
+      sctx.fillRect(x, h - bh, 1, bh);
+    }
+  }
+  const a = actions;
+  if (a.length > 1) {
+    // first action before t0, so the line enters from the left edge
+    let lo = 0, hi = a.length - 1;
+    while (hi - lo > 1) { const m = (lo + hi) >> 1; if (a[m].at < t0) lo = m; else hi = m; }
+    sctx.lineWidth = 2;
+    sctx.lineCap = 'round';
+    let dots = [];
+    // colour each segment by its speed -- the heatmap IS the line
+    for (let i = lo; i < a.length - 1 && a[i].at <= t1 + 1000; i++) {
+      const p = a[i], q = a[i + 1];
+      const speed = Math.abs(q.pos - p.pos) / (Math.max(1, q.at - p.at) / 1000);
+      sctx.strokeStyle = heat(speed);
+      sctx.beginPath();
+      sctx.moveTo(X(p.at), Y(p.pos));
+      sctx.lineTo(X(q.at), Y(q.pos));
+      sctx.stroke();
+      if (p.at >= t0) dots.push([X(p.at), Y(p.pos), speed]);
+    }
+    if (dots.length <= 300) {
+      for (const [x, y, s] of dots) {
+        sctx.fillStyle = heat(s);
+        sctx.beginPath(); sctx.arc(x, y, 2, 0, 7); sctx.fill();
+      }
+    }
+  }
+  // playhead -- a light line, so it is never mistaken for a hot (fast) segment
+  sctx.strokeStyle = hexA(C.ink, .85);
+  sctx.lineWidth = 1;
+  sctx.beginPath(); sctx.moveTo(w / 2, 0); sctx.lineTo(w / 2, h); sctx.stroke();
+}
+// a click anywhere on the strip seeks, relative to the centered playhead
+strip.addEventListener('click', e => {
+  const frac = e.offsetX / strip.clientWidth - 0.5;
+  vid.currentTime = Math.max(0, vid.currentTime + frac * WINDOW_MS / 1000);
+});
+
+function tick() {
+  const ms = vid.currentTime * 1000;
+  drawSim(ms);
+  drawTimeline(ms);
+  drawStrip(ms);
+  drawConfReadout(ms);
+  drawCrop(ms);
+  requestAnimationFrame(tick);
+}
+
+// ---- boot ----------------------------------------------------------------
+(async () => {
+  // the words first: every label built below is built in the right language
+  await fetchLang();
+  await fetchState();
+  buildPresetOptions();  // dropdown labels carry each preset's number
+  sizeStrip();
+  sizeTimeline();
+  await selectClip(0);   // selects clip 0 and syncs its controls
+  tick();
+})();
+</script>
+</body>
+</html>

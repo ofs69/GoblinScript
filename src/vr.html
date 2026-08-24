@@ -1,0 +1,759 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>GoblinScript -- aim the VR clip</title>
+<style>
+  /* The picker's palette arrives from /api/state and overrides every one of
+     these, so the page wears whatever scheme T is on (amber, CGA, mono). The
+     defaults are goblin green, so a page whose fetch failed still renders. */
+  :root {
+    color-scheme: dark;
+    --bg: #0e130c; --panel: #151d14; --panel-2: #1b241a; --edge: #4c6144;
+    --hi: #8bc34a; --hi-bright: #b6e07a; --hi-dim: #bcda90;
+    --ink: #f4f9f0; --ink-soft: #d3e2c7; --fang: #f1f8e9;
+    --danger: #ef5350; --danger-soft: #ef9a9a;
+    --chrome: ui-monospace, "Cascadia Mono", Consolas, monospace;
+  }
+  body { margin: 0; background: var(--bg); color: var(--ink);
+         font: 13px/1.4 var(--chrome); }
+  #top { display: flex; flex-wrap: wrap; gap: 10px; align-items: center;
+         padding: 8px 12px; background: var(--panel);
+         border-bottom: 2px solid var(--edge); }
+  #top b { color: var(--hi-bright); font-size: 14px; }
+  #top label { color: var(--hi-dim); }
+  select, input[type=number] { background: var(--panel-2); color: var(--ink);
+         border: 2px inset var(--edge); padding: 2px 4px; font: inherit;
+         width: 62px; }
+  select { width: auto; }
+  button { background: var(--panel-2); color: var(--ink);
+           border: 2px outset var(--edge); padding: 3px 10px; font: inherit;
+           cursor: pointer; }
+  button:hover { color: var(--hi-bright); }
+  button.primary { background: var(--hi-dim); border-color: var(--edge);
+                   color: #000; font-weight: bold; }
+  button:disabled { opacity: .5; cursor: default; }
+  #status { color: var(--ink-soft); margin-left: auto; }
+  #main { padding: 12px; }
+  #view { display: block; width: 100%; max-width: 1152px; background: #000;
+          cursor: grab; user-select: none; touch-action: none; }
+  #view.dragging { cursor: grabbing; }
+  #readout { padding: 6px 2px; color: var(--ink-soft); }
+  #readout .aiming { color: var(--fang); }
+  #readout .saved { color: var(--hi); }
+  #cover { color: var(--danger-soft); margin-left: 10px; }
+  #aspectwarn { color: var(--danger-soft); padding: 0 2px 6px; display: none; }
+  #ab { position: absolute; left: 0; top: 0; width: 100%; height: 100%;
+        display: none; cursor: pointer; }
+  #ablabel { position: absolute; left: 6px; top: 6px; display: none;
+             background: rgba(0,0,0,.75); color: var(--fang); padding: 2px 6px;
+             pointer-events: none; }
+  #glfail { display: none; color: var(--danger); padding: 6px 2px; }
+  #viewwrap { position: relative; display: inline-block; max-width: 100%; }
+  #equiwrap { position: relative; display: inline-block; margin-top: 8px;
+              max-width: 100%; }
+  #equi { display: block; max-width: 100%; background: #000; cursor: crosshair;
+          user-select: none; touch-action: none; }
+  #vpbox { position: absolute; border: 1.5px solid var(--fang);
+           box-shadow: 0 0 0 1px rgba(0,0,0,.6); pointer-events: none; }
+  #tlwrap { position: relative; margin: 10px 0 2px; }
+  #tl { width: 100%; margin: 2px 0 0; position: relative; z-index: 1;
+        accent-color: var(--hi); }
+  #rangebar { position: absolute; top: 0; bottom: 0;
+              background: color-mix(in srgb, var(--hi) 18%, transparent);
+              border: 1px solid var(--hi); pointer-events: none;
+              display: none; z-index: 2; }
+  #filmhead { margin: 14px 0 4px; color: var(--ink-soft); display: flex;
+              gap: 10px; align-items: center; flex-wrap: wrap; }
+  #film { display: flex; gap: 4px; overflow-x: auto; padding-bottom: 4px; }
+  .cell { position: relative; flex: 1 1 0; min-width: 90px; cursor: pointer;
+          background: #000; border: 1px solid var(--edge); }
+  .cell canvas { display: block; width: 100%; }
+  .cell.pending { min-height: 60px; }
+  .cell span { position: absolute; left: 0; bottom: 0; padding: 0 3px;
+               background: rgba(0,0,0,.65); color: var(--hi-bright);
+               font-size: 11px; }
+  #help { color: var(--hi-dim); padding: 8px 0; opacity: .8; }
+  #nav { display: flex; gap: 6px; margin-top: 6px; align-items: center;
+         flex-wrap: wrap; }
+  #tcur { color: var(--hi); min-width: 130px; }
+  #donebar { display: flex; gap: 10px; align-items: center; margin-top: 14px;
+             padding-top: 10px; border-top: 2px solid var(--edge);
+             flex-wrap: wrap; }
+  #donenote { color: var(--ink-soft); }
+  .skipped { color: var(--fang); }
+</style>
+</head>
+<body>
+<div id="top">
+  <span id="clipnav" style="display:none">
+    <button id="prevc" data-t-title="vr.prevclip" title="previous clip (up arrow)">&#9664;</button>
+    <select id="clipsel" data-t-title="vr.clipsel" title="tick = aimed"></select>
+    <button id="nextc" data-t-title="vr.nextclip" title="next clip (down arrow)">&#9654;</button>
+    <span id="clipn"></span>
+  </span>
+  <b id="clip">...</b>
+  <label data-t="vr.layout">layout <select id="layout">
+    <option>sbs</option><option>tb</option><option>mono</option></select></label>
+  <label data-t="vr.proj">proj <select id="projection">
+    <option>hequirect</option><option>fisheye</option><option>equirect</option>
+  </select></label>
+  <label data-t="vr.lens">lens&deg; <input id="ih_fov" type="number" step="5" min="120" max="360"></label>
+  <label data-t="vr.hfov">hfov&deg; <input id="h_fov" type="number" step="5" min="10" max="150"></label>
+  <label data-t="vr.vfov">vfov&deg; <input id="v_fov" type="number" step="5" min="10" max="150"
+                 data-t-placeholder="vr.auto" placeholder="auto"></label>
+  <label data-t="vr.out">out <input id="out_w" type="number" step="2" min="64" max="4096">&times;<input
+                 id="out_h" type="number" step="2" min="64" max="4096"></label>
+  <span id="status"></span>
+</div>
+<div id="main">
+    <div id="viewwrap">
+      <canvas id="view"></canvas>
+      <img id="ab" draggable="false" data-t-title="vr.ab.title" title="v360 reference -- click or V to close">
+      <span id="ablabel" data-t="vr.ab.label">ffmpeg v360 reference (V)</span>
+    </div>
+    <div id="glfail"></div>
+    <div id="readout">
+      <span id="angles">yaw 0.0&deg; pitch 0.0&deg;</span>
+      <span id="aimstate" class="saved"> &mdash; saved aim</span>
+      <span id="cover"></span>
+    </div>
+    <div id="aspectwarn"></div>
+    <div id="tlwrap">
+      <input id="tl" type="range" min="0" max="1000" value="0" step="1">
+      <div id="rangebar"></div>
+    </div>
+    <div id="nav">
+      <span id="tcur">0:00.0</span>
+      <button id="burstb" data-t-title="vr.burst.title" title="loop ~2s of motion at the cursor, live under the aim">&#9654; <span data-t="vr.burst">burst (B)</span></button>
+      <button id="abb" data-t-title="vr.ab.button.title" title="flip to a frame projected by ffmpeg's v360, the engine the draft will use" data-t="vr.ab.button">A/B v360 (V)</button>
+      <button id="rin" data-t="vr.rangein">range in (I)</button>
+      <button id="rout" data-t="vr.rangeout">range out (O)</button>
+      <button id="rclr" data-t="vr.rangeclear">clear range (U)</button>
+      <span id="rlabel" style="color:var(--hi)"></span>
+    </div>
+    <div id="filmhead">
+      <b style="color:var(--hi-bright)" data-t="vr.filmstrip">filmstrip</b>
+      <span data-t="vr.filmstrip.hint">&mdash; the whole draft range through the current aim; every cell
+        must hold the action</span>
+      <button id="filmb" data-t="vr.refresh">refresh (F)</button>
+    </div>
+    <div id="film"></div>
+    <div id="equiwrap"><canvas id="equi"></canvas><div id="vpbox"></div></div>
+    <div id="donebar">
+      <button id="doneb" class="primary" data-t="vr.done">Done &mdash; start drafting</button>
+      <button id="skipb" data-t-title="vr.notvr.title" title="this is not VR after all: draft it as an ordinary flat video" data-t="vr.notvr">not VR (K)</button>
+      <span id="donenote"></span>
+    </div>
+    <div id="help" data-t="vr.help">drag view = aim &middot; click/drag panorama = aim &middot;
+      the aim saves when you release, and is ONE direction for the whole draft
+      &middot; filmstrip cell = seek there &middot; B loop 2s of motion at the
+      cursor &middot; V flip to the ffmpeg v360 reference &middot; F refresh
+      filmstrip &middot; left/right arrows &plusmn;0.5s (shift &plusmn;5s)
+      &middot; up/down arrows prev/next clip &middot; I/O draft range in/out
+      &middot; U clear range &middot; K not VR &middot; Esc revert to the saved
+      aim &middot; Ctrl+Z undo aim/range edits (physical key positions,
+      layout-independent)</div>
+</div>
+<script src="/projector.js"></script>
+<script>
+"use strict";
+const $ = id => document.getElementById(id);
+
+// ---- language ----------------------------------------------------------------
+// The aiming page speaks whatever the app that opened it does. Same contract as
+// the review page: `/api/lang` is the active catalog with English merged under
+// it, the markup keeps its English as what shows before the fetch lands, and a
+// marked element's own leading text is what gets replaced -- never its
+// children, which on this page are the controls themselves.
+let L = {};
+function T(key, args) {
+  let s = L[key];
+  if (s === undefined) return key;
+  if (args) for (const k in args) s = s.split("{" + k + "}").join(args[k]);
+  return s;
+}
+async function fetchLang() {
+  try {
+    const r = await (await fetch("/api/lang")).json();
+    L = r.strings || {};
+    document.documentElement.lang = r.code || "en-US";
+  } catch (e) { /* the markup's own English stands */ }
+  for (const el of document.querySelectorAll("[data-t]")) {
+    const s = L[el.dataset.t];
+    if (s === undefined) continue;
+    const n = [...el.childNodes].find(x => x.nodeType === 3 && x.textContent.trim());
+    if (!n) { el.textContent = s; continue; }
+    n.textContent = n.textContent.match(/^\s*/)[0] + s + n.textContent.match(/\s*$/)[0];
+  }
+  for (const el of document.querySelectorAll("[data-t-title]")) {
+    const s = L[el.dataset.tTitle];
+    if (s !== undefined) el.title = s;
+  }
+  for (const el of document.querySelectorAll("[data-t-placeholder]")) {
+    const s = L[el.dataset.tPlaceholder];
+    if (s !== undefined) el.placeholder = s;
+  }
+  document.title = T("vr.title");
+}
+
+const FILM_N = 10;                       // frames spread across the range
+let S = { cfg: null, dur: 0, t: 0, aim: null, seq: 0, eseq: 0, fseq: 0,
+          bseq: 0, undo: [], clips: [], idx: 0 };
+
+const fmt = ms => {
+  const s = ms / 1000, m = Math.floor(s / 60);
+  return m + ":" + (s - m * 60).toFixed(1).padStart(4, "0");
+};
+const vfov = () => S.cfg.v_fov || S.cfg.v_fov_auto;
+// the aim being shown: the unsaved drag if there is one, else the sidecar's
+const liveAim = () => S.aim || (S.cfg && S.cfg.aim) || { yaw: 0, pitch: 0 };
+
+async function loadState() {
+  const st = await (await fetch("/api/state")).json();
+  S.cfg = st.cfg; S.dur = st.duration_ms;
+  // the picker's colour scheme follows the goblins into the browser
+  if (st.theme) for (const [k, v] of Object.entries(st.theme))
+    if (k !== "name") document.documentElement.style.setProperty("--" + k, v);
+  $("clip").textContent = st.id + "  " + st.src_w + "x" + st.src_h +
+    "  " + fmt(S.dur);
+  for (const k of ["layout", "projection", "ih_fov", "h_fov", "out_w", "out_h"])
+    $(k).value = st.cfg[k];
+  $("v_fov").value = st.cfg.v_fov || "";
+  $("v_fov").placeholder = "auto " + st.cfg.v_fov_auto.toFixed(0);
+  $("tl").max = Math.max(1, Math.floor(S.dur));
+  drawRange();
+  drawSkip();
+  drawAspect();
+}
+
+// The viewport aspect is the anamorphic squash the encoder will see (every
+// clip reaches it scaled into a square), so a non-16:9 viewport is a stretch
+// the goblins were never trained on. Shown, not refused.
+function drawAspect() {
+  const w = S.cfg && S.cfg.aspect_warning;
+  $("aspectwarn").style.display = w ? "" : "none";
+  $("aspectwarn").textContent = w ? "⚠ " + w : "";
+}
+
+// ------------------------------------------------------------ batch clips
+// One session covers the whole batch: every VR clip has to be aimed BEFORE
+// any drafting starts, because the draft loop normalizes the next video while
+// this one is on the GPU and cannot do that for an unaimed one.
+async function loadClips() {
+  const d = await (await fetch("/api/clips")).json();
+  S.clips = d.clips; S.idx = d.idx;
+  const sel = $("clipsel");
+  sel.innerHTML = "";
+  d.clips.forEach((c, i) => {
+    const o = document.createElement("option");
+    o.value = i;
+    o.textContent = (c.skipped ? "- " : c.aimed ? "✓ " : "· ") + c.id +
+      (c.ranged ? " [range]" : "") + (c.skipped ? " (not VR)" : "");
+    sel.appendChild(o);
+  });
+  sel.value = d.idx;
+  $("clipnav").style.display = d.clips.length < 2 ? "none" : "";
+  const done = d.clips.filter(c => c.aimed || c.skipped).length;
+  $("clipn").textContent = (d.idx + 1) + "/" + d.clips.length;
+  const left = d.clips.length - done;
+  $("donenote").textContent = left
+    ? left + " of " + d.clips.length + " still unaimed — they will be " +
+      "drafted as flat video, which for a VR source is nonsense"
+    : "all " + d.clips.length + " sorted";
+  $("donenote").className = left ? "skipped" : "";
+}
+async function switchClip(i) {
+  if (!S.clips.length || i < 0 || i >= S.clips.length || i === S.idx) return;
+  S.fseq++;         // supersede an in-flight filmstrip of the old clip NOW,
+                    // not only when the new one starts loading
+  setStatus(T("vr.st.loadingclip", { n: i + 1 }), 60000);
+  const r = await fetch("/api/clip",
+    { method: "POST", body: JSON.stringify({ index: i }) });
+  const res = await r.json().catch(() => ({ ok: false }));
+  if (!res.ok) { setStatus(T("vr.st.clipfailed", { why: res.error || T("vr.st.failed") }), 8000);
+                 $("clipsel").value = S.idx; return; }
+  burstStop();
+  S.aim = null; S.undo = [];
+  dropFrames();                 // a new clip means new eye frames entirely
+  await loadState();
+  await loadClips();
+  setT(0); loadFilm();
+}
+$("prevc").onclick = () => switchClip(S.idx - 1);
+$("nextc").onclick = () => switchClip(S.idx + 1);
+$("clipsel").onchange = () => switchClip(+$("clipsel").value);
+
+// --------------------------------------------------------------- filmstrip
+// The check that ONE aim covers the whole clip: N frames spread across the
+// draft range, every one under the aim being considered. Frames are fetched
+// SEQUENTIALLY -- each is a seek into an 8K HEVC source, and ten concurrent
+// seeks would thrash the decoder for no gain -- but they are fetched ONCE:
+// re-aiming re-projects the frames already held, so the strip answers "does
+// this aim hold across the clip" as fast as the drag itself.
+const FILM_W = 480;
+let filmImgs = [];
+function filmTimes() {
+  const r = (S.cfg && S.cfg.range_ms) || [0, S.dur];
+  const out = [];
+  for (let i = 0; i < FILM_N; i++)
+    out.push(r[0] + (r[1] - r[0]) * (i + 0.5) / FILM_N);
+  return out;
+}
+function drawFilm() {
+  if (!PF || !PF.ok || !S.cfg) return;
+  const a = liveAim(), w = FILM_W;
+  const h = Math.max(2, Math.round(w * S.cfg.out_h / S.cfg.out_w));
+  PF.canvas.width = w; PF.canvas.height = h;
+  $("film").querySelectorAll("canvas").forEach((cv, i) => {
+    const img = filmImgs[i];
+    if (!img) return;
+    PF.upload(img);
+    PF.draw(S.cfg, a.yaw, a.pitch);
+    if (cv.width !== w || cv.height !== h) { cv.width = w; cv.height = h; }
+    cv.getContext("2d").drawImage(PF.canvas, 0, 0);
+  });
+}
+async function loadFilm() {
+  if (!S.cfg) return;
+  const seq = ++S.fseq;
+  const wrap = $("film"), ts = filmTimes();
+  wrap.innerHTML = "";
+  filmImgs = [];
+  const cells = ts.map(t => {
+    const d = document.createElement("div");
+    d.className = "cell pending";
+    d.innerHTML = "<canvas></canvas><span>" + fmt(t) + "</span>";
+    d.onclick = () => setT(t);
+    wrap.appendChild(d);
+    return d;
+  });
+  for (let i = 0; i < ts.length; i++) {
+    setStatus(T("vr.st.filmprogress", { i: i + 1, n: ts.length }), 60000);
+    let img = null;
+    try { img = await eyeFrame(ts[i]); } catch (e) { img = null; }
+    if (seq !== S.fseq) return;            // a newer strip supersedes this one
+    if (!img) continue;
+    filmImgs[i] = img;
+    cells[i].classList.remove("pending");
+    drawFilm();
+  }
+  setStatus(T("vr.st.filmdone", { n: ts.length }), 4000);
+}
+$("filmb").onclick = loadFilm;
+
+// ------------------------------------------------------------ motion burst
+// ~2 s of frames arrive as ONE tiled sheet (one decode, one fetch) and loop
+// as sub-rectangles of a single texture. Because the projection happens here,
+// the aim can be dragged WHILE the burst runs -- the check is no longer "was
+// this aim right 20 seconds ago", it is live.
+let burst = null;
+function burstStop() {
+  if (!burst) return;
+  clearInterval(burst.timer);
+  burst = null;
+  if (curImg && P && P.ok) P.upload(curImg);
+  redraw();
+}
+function burstDraw() {
+  if (!burst) return;
+  const k = burst.i++ % (burst.cols * burst.rows);
+  const cx = k % burst.cols, cy = Math.floor(k / burst.cols);
+  const tw = 1 / burst.cols, th = 1 / burst.rows;
+  const ix = 0.5 / burst.sheet.naturalWidth, iy = 0.5 / burst.sheet.naturalHeight;
+  const a = liveAim();
+  // half-texel inset: LINEAR filtering must not sample the neighbouring tile
+  P.draw(S.cfg, a.yaw, a.pitch,
+         [cx * tw + ix, cy * th + iy, tw - 2 * ix, th - 2 * iy]);
+}
+async function burstPlay() {
+  if (burst) { burstStop(); setStatus(T("vr.st.burststopped")); return; }
+  if (!P || !P.ok) { setStatus(T("vr.st.burstwebgl")); return; }
+  const seq = ++S.bseq;
+  setStatus(T("vr.st.burstfetch"), 30000);
+  let r;
+  try { r = await fetch("/api/burst?t_ms=" + Math.round(S.t)); }
+  catch (e) { r = null; }
+  if (!r || !r.ok) { setStatus(T("vr.st.burstfailed")); return; }
+  const cols = +(r.headers.get("X-Cols") || 5),
+        rows = +(r.headers.get("X-Rows") || 4),
+        fps = +(r.headers.get("X-Fps") || 10);
+  const url = URL.createObjectURL(await r.blob());
+  const sheet = new Image();
+  await new Promise((res, rej) => {
+    sheet.onload = res; sheet.onerror = rej; sheet.src = url;
+  }).catch(() => null);
+  URL.revokeObjectURL(url);
+  if (seq !== S.bseq || !sheet.naturalWidth) { setStatus(T("vr.st.burstfailed")); return; }
+  burstStop();
+  P.upload(sheet);
+  burst = { sheet, cols, rows, i: 0, timer: setInterval(burstDraw, 1000 / fps) };
+  setStatus(T("vr.st.burstlooping"),
+            6000);
+}
+$("burstb").onclick = burstPlay;
+
+// ------------------------------------------------------------- v360 A/B
+// The preview and the draft's transcode are two engines agreeing on one
+// mapping. Eyeing a draft catches a bad aim; only this flip catches the shader
+// disagreeing with ffmpeg, so it stays one keypress away.
+async function abToggle() {
+  const el = $("ab");
+  if (!P || !P.ok) {          // the fallback preview already IS this frame
+    setStatus(T("vr.st.nowebgl"), 4000);
+    return;
+  }
+  if (el.style.display === "block") {
+    el.style.display = "none"; $("ablabel").style.display = "none";
+    setStatus(T("vr.st.aboff")); return;
+  }
+  const a = liveAim();
+  setStatus(T("vr.st.abrendering"), 20000);
+  const r = await fetch("/api/frame?t_ms=" + Math.round(S.t) + "&mode=proj" +
+    "&yaw=" + a.yaw.toFixed(3) + "&pitch=" + a.pitch.toFixed(3));
+  if (!r.ok) { setStatus(T("vr.st.abfailed")); return; }
+  const old = el.src;
+  el.src = URL.createObjectURL(await r.blob());
+  if (old && old.startsWith("blob:")) URL.revokeObjectURL(old);
+  el.style.display = "block"; $("ablabel").style.display = "block";
+  setStatus(T("vr.st.abon"),
+            6000);
+}
+$("abb").onclick = abToggle;
+$("ab").onclick = () => { if (P && P.ok) abToggle(); };
+
+function saveCfg(patch, isUndo) {
+  if ("range_ms" in patch && !isUndo && S.cfg)
+    pushUndo({ range: S.cfg.range_ms ? [...S.cfg.range_ms] : null });
+  fetch("/api/config", { method: "POST", body: JSON.stringify(patch) })
+    .then(r => r.json()).then(res => {
+      if (res.ok) {
+        S.cfg = res.cfg; setStatus(T("vr.st.saved"));
+        $("v_fov").placeholder = "auto " + res.cfg.v_fov_auto.toFixed(0);
+        drawRange(); drawSkip(); drawAspect();
+        // a layout change re-crops the eye: every held frame is now wrong
+        if ("layout" in patch) { dropFrames(); showFrame(S.t); loadFilm(); }
+        else { redraw(); drawFilm(); }
+        if ("range_ms" in patch) loadFilm();
+        loadClips();
+      }
+      else setStatus(T("vr.st.rejected", { why: res.error || T("vr.st.badconfig") }), 6000);
+    });
+}
+for (const k of ["layout", "projection", "ih_fov", "h_fov", "v_fov",
+                 "out_w", "out_h"])
+  $(k).addEventListener("change", () => {
+    const v = $(k).value;
+    saveCfg({ [k]: k === "v_fov" && v === "" ? null :
+              (k === "layout" || k === "projection" ? v : parseFloat(v)) });
+  });
+
+let statusTimer = null;
+function setStatus(msg, ms) {
+  $("status").textContent = msg;
+  clearTimeout(statusTimer);
+  statusTimer = setTimeout(() => $("status").textContent = "",
+                           ms || (/fail|reject|must/.test(msg) ? 4000 : 1500));
+}
+
+// ------------------------------------------------------------------ frames
+// The server's job is to SEEK, not to project: it hands over the equirect eye
+// frame at time t and `projector.js` (the same file vr_project.py's aiming
+// page loads) projects it here, per pixel the way ffmpeg's v360 will in the
+// transcode. So an aim change is a redraw, not a round trip -- and the
+// filmstrip and burst re-aim on frames already in hand.
+const PROJ_W = 1600;          // eye width fetched for projection
+const FRAME_CAP = 48;
+let P = null, PF = null;      // main projector + an offscreen one for cells
+const frames = new Map();     // t_ms -> Promise<Image>, cleared per clip/layout
+let curImg = null;
+
+function glInit() {
+  P = new VRProjector.Projector($("view"));
+  if (!P.ok) {
+    $("glfail").style.display = "";
+    $("glfail").textContent =
+      "WebGL unavailable" + (P.error ? " (" + P.error + ")" : "") +
+      " -- falling back to server-side v360 previews (slower to aim).";
+    return;
+  }
+  PF = new VRProjector.Projector(document.createElement("canvas"));
+}
+
+/** The equirect eye at t, cached client-side: re-aiming must never refetch. */
+function eyeFrame(t) {
+  const key = Math.round(t);
+  const hit = frames.get(key);
+  if (hit) return hit;
+  const p = new Promise((res, rej) => {
+    const img = new Image();
+    img.onload = () => res(img);
+    img.onerror = () => rej(new Error("frame"));
+    img.src = "/api/frame?mode=equi&w=" + PROJ_W + "&t_ms=" + key;
+  });
+  frames.set(key, p);
+  while (frames.size > FRAME_CAP) frames.delete(frames.keys().next().value);
+  return p;
+}
+function dropFrames() { frames.clear(); curImg = null; }
+
+/** Re-project what is already uploaded. Cheap enough for a drag. */
+function redraw() {
+  const a = liveAim();
+  showAngles(a.yaw, a.pitch);
+  if (!S.cfg) return;
+  const cv = $("view");
+  cv.style.height =
+    Math.round(cv.clientWidth * S.cfg.out_h / S.cfg.out_w) + "px";
+  if (!P || !P.ok) { fallbackFrame(); return; }
+  P.resize(cv.clientWidth, S.cfg);
+  if (curImg) P.draw(S.cfg, a.yaw, a.pitch);
+}
+
+/** Load the frame at t and show it. */
+async function showFrame(t) {
+  const seq = ++S.seq;
+  let img;
+  try { img = await eyeFrame(t); }
+  catch (e) { setStatus(T("vr.st.framefailed")); return; }
+  if (seq !== S.seq) return;              // a newer seek supersedes this one
+  curImg = img;
+  if (P && P.ok) P.upload(img);
+  redraw();
+  drawLocator();
+}
+
+// No WebGL: the v360 endpoint that backs the A/B flip becomes the preview
+// itself. Debounced, because every frame is an ffmpeg run again.
+let fbTimer = null;
+function fallbackFrame() {
+  clearTimeout(fbTimer);
+  fbTimer = setTimeout(async () => {
+    const seq = ++S.eseq, a = liveAim();
+    const r = await fetch("/api/frame?t_ms=" + Math.round(S.t) + "&mode=proj" +
+      "&yaw=" + a.yaw.toFixed(3) + "&pitch=" + a.pitch.toFixed(3));
+    if (seq !== S.eseq || !r.ok) return;
+    const blob = await r.blob();
+    if (seq !== S.eseq) return;
+    const el = $("ab"), old = el.src;
+    el.src = URL.createObjectURL(blob);
+    el.style.display = "block";
+    if (old && old.startsWith("blob:")) URL.revokeObjectURL(old);
+  }, 120);
+}
+
+/** The panorama locator: the same frame we already hold, no second fetch. */
+function drawLocator() {
+  const cv = $("equi");
+  if (!curImg || !curImg.naturalWidth) return;
+  const w = Math.min(720, curImg.naturalWidth);
+  const h = Math.round(w * curImg.naturalHeight / curImg.naturalWidth);
+  if (cv.width !== w || cv.height !== h) { cv.width = w; cv.height = h; }
+  cv.getContext("2d").drawImage(curImg, 0, 0, w, h);
+  const a = liveAim();
+  drawBox(a.yaw, a.pitch);
+}
+
+function showAngles(yaw, pitch) {
+  $("angles").textContent =
+    T("vr.angles", { yaw: yaw.toFixed(1), pitch: pitch.toFixed(1) });
+  const st = $("aimstate");
+  st.textContent = " " + T(S.aim ? "vr.aim.unsaved" : "vr.aim.saved");
+  st.className = S.aim ? "aiming" : "saved";
+  // Aiming past the edge of a 180 deg eye is not refused -- v360 smears the
+  // edge texel and the preview smears with it -- but it must not pass unseen.
+  const out = S.cfg ? VRProjector.coverage(S.cfg, yaw, pitch) : 0;
+  $("cover").textContent =
+    out > 0.001 ? T("vr.pastedge", { pct: (out * 100).toFixed(0) }) : "";
+  drawBox(yaw, pitch);
+}
+
+// ------------------------------------------------------- aiming (drag/click)
+function setAim(yaw, pitch) {
+  yaw = ((yaw + 180) % 360 + 360) % 360 - 180;
+  pitch = Math.max(-90, Math.min(90, pitch));
+  S.aim = { yaw, pitch };
+  redraw();
+}
+function clearAim() {                    // revert to the saved sidecar aim
+  if (!S.aim) return;
+  S.aim = null;
+  redraw(); drawFilm();
+  setStatus(T("vr.st.reverted"));
+}
+function postAim(aim, isUndo) {
+  if (!isUndo) pushUndo({ aim: { ...S.cfg.aim } });
+  fetch("/api/aim", { method: "POST", body: JSON.stringify({ aim }) })
+    .then(r => r.json()).then(res => {
+      if (!res.ok) { setStatus(T("vr.st.aimrejected")); return; }
+      S.cfg.aim = res.aim; S.cfg.skip = false; S.aim = null;
+      setStatus(T("vr.st.aimsaved"));
+      redraw();
+      drawFilm();      // the whole range re-checks on the new aim, no refetch
+      drawSkip();
+      loadClips();     // the picker's aimed marker moves
+    });
+}
+function commitAim() { if (S.aim) postAim({ ...S.aim }); }
+
+let drag = null;
+$("view").addEventListener("pointerdown", e => {
+  const base = liveAim();
+  drag = { x: e.clientX, y: e.clientY, yaw: base.yaw, pitch: base.pitch };
+  $("view").classList.add("dragging");
+  $("view").setPointerCapture(e.pointerId);
+});
+$("view").addEventListener("pointermove", e => {
+  if (!drag) return;
+  const dpp = S.cfg.h_fov / $("view").clientWidth;   // degrees per pixel
+  setAim(drag.yaw - (e.clientX - drag.x) * dpp,
+         drag.pitch + (e.clientY - drag.y) * dpp);
+});
+const endDrag = () => {
+  if (!drag) return;
+  drag = null; $("view").classList.remove("dragging");
+  commitAim();                          // the aim saves when you let go
+};
+$("view").addEventListener("pointerup", endDrag);
+$("view").addEventListener("pointercancel", endDrag);
+
+// panorama: horizontal span covered by the equirect image, for click<->angle
+function equiSpan() {
+  return S.cfg.projection === "equirect" ? 360 :
+         S.cfg.projection === "fisheye" ? S.cfg.ih_fov : 180;
+}
+function equiAim(e) {
+  const r = $("equi").getBoundingClientRect();
+  const fx = (e.clientX - r.left) / r.width, fy = (e.clientY - r.top) / r.height;
+  // linear angle map -- exact for (h)equirect, approximate for fisheye
+  setAim((fx - 0.5) * equiSpan(),
+         (0.5 - fy) * (S.cfg.projection === "fisheye" ? S.cfg.ih_fov : 180));
+}
+let edrag = false;
+$("equi").addEventListener("pointerdown", e => {
+  edrag = true; $("equi").setPointerCapture(e.pointerId); equiAim(e); });
+$("equi").addEventListener("pointermove", e => { if (edrag) equiAim(e); });
+$("equi").addEventListener("pointerup", () => {
+  if (edrag) { edrag = false; commitAim(); } });
+$("equi").addEventListener("pointercancel", () => edrag = false);
+
+function drawBox(yaw, pitch) {
+  const img = $("equi"), box = $("vpbox");
+  if (!img.clientWidth || !S.cfg) { box.style.display = "none"; return; }
+  const spanx = equiSpan(),
+        spany = S.cfg.projection === "fisheye" ? S.cfg.ih_fov : 180;
+  const w = Math.min(1, S.cfg.h_fov / spanx) * img.clientWidth,
+        h = Math.min(1, vfov() / spany) * img.clientHeight;
+  box.style.display = "";
+  box.style.width = w + "px"; box.style.height = h + "px";
+  box.style.left = ((0.5 + yaw / spanx) * img.clientWidth - w / 2) + "px";
+  box.style.top = ((0.5 - pitch / spany) * img.clientHeight - h / 2) + "px";
+}
+
+// --------------------------------------------------------------- timeline
+function setT(ms) {
+  S.t = Math.max(0, Math.min(S.dur, ms));
+  $("tl").value = Math.floor(S.t);
+  $("tcur").textContent = fmt(S.t) + " / " + fmt(S.dur);
+  burstStop();
+  showFrame(S.t);
+}
+$("tl").addEventListener("input", () => setT(parseFloat($("tl").value)));
+
+// ------------------------------------------------------------- draft range
+// VR runs long and the encoder is the expensive stage, so trimming is worth a
+// key. The draft then runs on the CLIP clock and the funscript is shifted back
+// onto the source clock when it is written -- what lands on disk is always for
+// the full-length video.
+function drawRange() {
+  const r = S.cfg.range_ms, bar = $("rangebar");
+  if (!r) { bar.style.display = "none"; $("rlabel").textContent = ""; return; }
+  bar.style.display = "";
+  bar.style.left = (100 * r[0] / Math.max(1, S.dur)) + "%";
+  bar.style.width = (100 * (r[1] - r[0]) / Math.max(1, S.dur)) + "%";
+  $("rlabel").textContent =
+    fmt(r[0]) + " – " + fmt(r[1]) + "  (" + fmt(r[1] - r[0]) + " drafted)";
+}
+function setRange(inMs, outMs) {
+  const r = S.cfg.range_ms || [0, S.dur];
+  let t0 = inMs !== null ? inMs : r[0], t1 = outMs !== null ? outMs : r[1];
+  if (t0 >= t1) { setStatus(T("vr.st.rangeorder")); return; }
+  saveCfg({ range_ms: [t0, t1] });
+}
+$("rin").onclick = () => setRange(S.t, null);
+$("rout").onclick = () => setRange(null, S.t);
+$("rclr").onclick = () => saveCfg({ range_ms: null });
+
+// ------------------------------------------------------------- not VR / done
+function drawSkip() {
+  const on = S.cfg && S.cfg.skip;
+  $("skipb").textContent = on ? "VR after all (K)" : "not VR (K)";
+  $("skipb").style.color = on ? "var(--fang)" : "";
+}
+function toggleSkip() {
+  fetch("/api/skip", { method: "POST", body: "{}" })
+    .then(r => r.json()).then(res => {
+      if (!res.ok) return;
+      S.cfg.skip = res.skip;
+      drawSkip(); loadClips();
+      setStatus(res.skip ? "will be drafted as ordinary flat video"
+                         : "back to VR");
+    });
+}
+$("skipb").onclick = toggleSkip;
+$("doneb").onclick = () => {
+  $("doneb").disabled = true;
+  $("doneb").textContent = "drafting -- watch the terminal";
+  fetch("/api/done", { method: "POST", body: "{}" });
+};
+
+// ------------------------------------------------------------------- undo
+function pushUndo(entry) {
+  S.undo.push(entry);
+  if (S.undo.length > 50) S.undo.shift();
+}
+function undo() {
+  const e = S.undo.pop();
+  if (!e) { setStatus(T("vr.st.nothingtoundo")); return; }
+  if (e.aim) postAim(e.aim, true);
+  if ("range" in e) saveCfg({ range_ms: e.range }, true);
+  setStatus(T("vr.st.undone"));
+}
+
+// e.code = physical key position -- layout-agnostic (QWERTZ/AZERTY/...),
+// immune to shift/caps state.
+document.addEventListener("keydown", e => {
+  if (/^(INPUT|SELECT|TEXTAREA)$/.test(e.target.tagName)
+      && e.target.type !== "range") return;
+  if (e.code === "KeyZ" && (e.ctrlKey || e.metaKey)) {
+    undo(); e.preventDefault(); return;
+  }
+  if (e.ctrlKey || e.metaKey || e.altKey) return;
+  const step = e.shiftKey ? 5000 : 500;
+  switch (e.code) {
+    case "ArrowLeft":  setT(S.t - step); e.preventDefault(); break;
+    case "ArrowRight": setT(S.t + step); e.preventDefault(); break;
+    case "ArrowUp":    switchClip(S.idx - 1); e.preventDefault(); break;
+    case "ArrowDown":  switchClip(S.idx + 1); e.preventDefault(); break;
+    case "KeyF":   loadFilm(); break;
+    case "KeyB":   burstPlay(); break;
+    case "KeyV":   abToggle(); break;
+    case "KeyK":   toggleSkip(); break;
+    case "KeyI":   setRange(S.t, null); break;
+    case "KeyO":   setRange(null, S.t); break;
+    case "KeyU":   saveCfg({ range_ms: null }); break;
+    case "Escape": burstStop(); clearAim(); break;
+  }
+});
+
+window.addEventListener("resize", redraw);
+
+glInit();
+// the words first, so every label and status line below is already in the
+// language the picker that opened this page is set to
+fetchLang()
+  .then(loadState)
+  .then(() => { setT(0); loadFilm(); loadClips(); });
+</script>
+</body>
+</html>

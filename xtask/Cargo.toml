@@ -1,0 +1,10 @@
+[package]
+name = "xtask"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Repo tooling: `cargo xtask dist` packs the distribution zips."
+
+[dependencies]
+anyhow = "1"
+zip = "2"

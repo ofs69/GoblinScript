@@ -1,0 +1,71 @@
+[package]
+name = "goblinscript"
+version = "0.3.4"
+edition = "2021"
+description = "Video in, funscript out. Made by real goblins: frozen V-JEPA 2.1 perception + the trained head, as one CLI."
+license = "MIT"
+repository = "https://github.com/ofs69/GoblinScript"
+# An application, not a library: there is nothing here for another crate to
+# depend on, so it is never published to crates.io. This also tells cargo-about
+# (see about.toml `private.ignore`) that goblinscript itself is the product, not
+# a third-party notice to attribute in THIRD-PARTY-NOTICES.txt.
+publish = false
+
+[workspace]
+members = ["xtask"]
+
+# Windows-only: bakes the goblin app icon into the exe (build.rs). Kept out of
+# the default deps so a non-Windows or resource-compiler-less build is unaffected.
+[target.'cfg(windows)'.build-dependencies]
+winresource = "0.1"
+
+[target.'cfg(windows)'.dependencies]
+# Two Win32 surfaces, both Windows-only by construction, which is why they sit
+# under a target-specific dependency rather than in the main table:
+# `Win32_Media_Audio` is the multimedia MIDI-out API (winmm) the soundtrack
+# plays through, and `Win32_Storage_FileSystem` is `GetLogicalDrives` -- the
+# drive letters that exist, read from a bitmask rather than by touching each
+# letter in turn (an empty optical bay spins up for that, and a disconnected
+# network mapping waits out its timeout).
+windows = { version = "0.62.2", features = [
+    "Win32_Media_Audio",
+    "Win32_Storage_FileSystem",
+    # `GetUserDefaultLocaleName`: which language to open in before anyone has
+    # chosen one, so an installed translation is found without being asked for.
+    "Win32_Globalization",
+] }
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+indicatif = "0.17"
+console = "0.15"
+ratatui = "0.29"
+# No ndarray here on purpose: tensors go in and out of ort as (shape, &[T]),
+# which keeps us off ort's own ndarray version and out of dependency conflicts.
+ort = { version = "2.0.0-rc.12", features = ["directml"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+blake3 = "1"
+# The review page's HTTP server: synchronous, loopback-only, a few requests a
+# second -- an async stack would be pure weight here.
+tiny_http = "0.12"
+# The startup chime. Decoders off (default-features = false): we synthesize raw
+# samples and hand them to a SamplesBuffer, so no mp3/flac/vorbis/wav pulled in.
+rodio = { version = "0.20", default-features = false }
+sysinfo = { version = "0.39.6", default-features = false, features = ["system"] }
+midly = { version = "0.5.3", default-features = false, features = ["std"] }
+
+[features]
+# The release build bakes the ONNX bundle into the exe; a dev build reads it
+# from --bundle, so the crate compiles before export_bundle.py has ever run.
+embed = []
+# Optional NVIDIA fast path: registers the CUDA EP ahead of DirectML. Falls
+# back to DirectML at RUNTIME when CUDA/cuDNN DLLs are absent, so one binary
+# still runs everywhere -- the feature only adds the option, never a
+# requirement. (CUDA runtime + cuDNN 9 must be on PATH or beside the exe.)
+cuda = ["ort/cuda"]
+
+[profile.release]
+opt-level = 3
+lto = true

@@ -1,0 +1,37 @@
+# What a bare checkout has to pass: no bundle, no soundtrack, no GPU. That is
+# what the split buys -- everything below the model is ordinary Rust, and it is
+# checked on every push rather than only on the machine that ships.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    # Windows-only by construction: the MIDI player is winmm and DirectML is the
+    # inference backend, so another runner would not be building this app.
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}
+
+      # The workspace, so xtask is built too -- it is what packs a release, and
+      # a dist run that does not compile is found at the worst moment.
+      - name: Build
+        run: cargo build --workspace --all-targets
+
+      - name: Test
+        run: cargo test --workspace

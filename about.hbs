@@ -1,0 +1,99 @@
+================================================================================
+GoblinScript -- Third-Party Notices
+================================================================================
+
+GoblinScript is free software under the MIT License; its own terms are in the
+accompanying LICENSE file, and its source is at
+https://github.com/ofs69/GoblinScript.
+
+It bundles, links, and builds upon the third-party software and
+machine-learning model weights listed below, each of which is used under a
+permissive license that allows this. These notices reproduce the required
+copyright and license information for those third-party components only.
+
+NOT INCLUDED in this distribution, and therefore not covered here:
+
+  * ffmpeg / ffprobe. GoblinScript invokes whatever ffmpeg you install
+    separately (e.g. `winget install --id Gyan.FFmpeg`) as an external program.
+    It is not linked into or shipped with GoblinScript, so ffmpeg's license
+    does not apply to these files.
+
+--------------------------------------------------------------------------------
+1. MACHINE-LEARNING MODEL WEIGHTS (baked into goblinscript.exe)
+--------------------------------------------------------------------------------
+
+V-JEPA 2 / V-JEPA 2.1 -- video encoder weights
+    Copyright (c) Meta Platforms, Inc. and affiliates.
+    License: MIT (full text in section 4 below).
+    The weights were converted to ONNX and paired with a separately trained
+    head; the base encoder weights remain under the MIT License.
+
+TransNetV2 -- shot-boundary detector weights (transnet.onnx)
+    Copyright (c) 2020 Tomas Soucek, Jakub Lokoc.
+    License: MIT (full text in section 4 below).
+    The weights were converted to ONNX for use in GoblinScript.
+
+--------------------------------------------------------------------------------
+2. NATIVE LIBRARIES
+--------------------------------------------------------------------------------
+
+ONNX Runtime -- statically linked into goblinscript.exe.
+    Copyright (c) Microsoft Corporation.
+    License: MIT (full text in section 4 below).
+
+DirectML -- DirectML.dll, shipped alongside goblinscript.exe.
+    Copyright (c) Microsoft Corporation.
+    Redistributed under the Microsoft Software License Terms for the
+    Microsoft.AI.DirectML package, which permit redistribution of DirectML.dll.
+
+--------------------------------------------------------------------------------
+3. RUST CRATES (statically linked into goblinscript.exe)
+--------------------------------------------------------------------------------
+GoblinScript statically links the Rust crates below. Each license is listed once,
+with the crates it covers and its full text.
+
+{{#each licenses}}
+================================================================================
+{{{name}}}
+--------------------------------------------------------------------------------
+Used by:
+{{#each used_by}}
+    * {{{crate.name}}} {{{crate.version}}}
+{{/each}}
+
+{{{text}}}
+
+{{/each}}
+--------------------------------------------------------------------------------
+4. FULL LICENSE TEXTS FOR THE COMPONENTS IN SECTIONS 1 AND 2
+--------------------------------------------------------------------------------
+
+### MIT License
+
+MIT License
+
+Copyright (c) Meta Platforms, Inc. and affiliates.
+Copyright (c) Microsoft Corporation.
+Copyright (c) 2020 Tomas Soucek, Jakub Lokoc.
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+================================================================================
+End of Third-Party Notices.
+================================================================================

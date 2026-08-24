@@ -1,0 +1,3 @@
+# `cargo xtask dist` -> build both release variants and pack dist/ zips.
+[alias]
+xtask = "run --release --package xtask --"

@@ -1,0 +1,46 @@
+# cargo-about config for the GoblinScript THIRD-PARTY-NOTICES.txt.
+#
+#   cargo about generate --manifest-path Cargo.toml about.hbs -o THIRD-PARTY-NOTICES.txt
+#
+# (DEVELOPMENT.md "Third-party notices" documents the full regeneration step.)
+#
+# `accepted` is deliberately the permissive set ONLY. cargo-about FAILS if any
+# crate in the shipped tree carries a license not listed here -- which is the
+# point. GoblinScript is MIT and ships as a prebuilt binary with the model baked
+# in, so a GPL/LGPL/AGPL crate entering the dependency tree would put obligations
+# on that binary that MIT does not carry and that the release zips do not meet.
+# This turns that into a loud build error rather than a silent violation. If a
+# new permissive license shows up (BSD variant, etc.), add it here; if a copyleft
+# one does, that dependency has to go.
+accepted = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "CC0-1.0",
+    "Unlicense",
+    "Zlib",
+    "BSL-1.0",
+    "Unicode-3.0",
+    "Unicode-DFS-2016",
+    "MPL-2.0",
+]
+
+# Only the Windows target ships, so only its dependency graph matters -- this
+# keeps unix-only transitive crates (and their licenses) out of the notices.
+targets = ["x86_64-pc-windows-msvc"]
+
+# Build- and dev-only tooling never lands in the shipped binary, so it is not a
+# third-party notice for users (e.g. the winresource build-dep that only bakes
+# the app icon at compile time).
+ignore-build-dependencies = true
+ignore-dev-dependencies = true
+
+# goblinscript itself is the product, not a third-party dependency to attribute
+# to someone else -- its own MIT license ships as LICENSE, in the repository and
+# in the zips. Without this, cargo-about would scan the crate directory, mistake
+# this very notices file for a "license," and dump it inline.
+[private]
+ignore = true
