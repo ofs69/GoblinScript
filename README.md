@@ -53,14 +53,26 @@ on. Nothing here is for anyone under 18.
 ## Building it
 
 ```
-cargo build --release     # builds; needs a bundle to draft anything
+cargo build --release     # builds; no goblins in it yet
 cargo test                # green on a bare checkout
 ```
 
-A build from source has no goblins in it. A released `goblinscript.exe` will
-hand its own over -- `goblinscript --dump-bundle <DIR>` writes them out -- and
-`--bundle <DIR>` points your build at them; it then drafts exactly as that
-release does.
+The model is not in this repository, but a **released** `goblinscript.exe`
+hands its own over. Ask it for one, and point your build at what it writes:
+
+```
+goblinscript --dump-bundle bundle          # from a release exe, into ./bundle
+cargo run --release -- --bundle bundle VIDEO
+```
+
+Those are the same bytes the release drafts with, so your build now drafts
+identically. To bake them in instead -- your own standalone exe, or a whole
+release zip beside `LICENSE` and the third-party notices:
+
+```
+cargo build --release --features embed     # reads ./bundle at compile time
+cargo xtask dist                           # -> dist/goblinscript-VER-dml.zip
+```
 
 `music/` is empty in a checkout and the app runs silent; any General MIDI
 `.mid` files dropped in there become the playlist.
