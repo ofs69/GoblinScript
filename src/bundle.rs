@@ -314,6 +314,53 @@ mod embedded {
     pub const MASK: &[u8] = bundled!("mask.onnx");
 }
 
+/// Write the bundle baked into this binary out to `dir`, byte for byte.
+///
+/// The graphs are a build product of the training tree and are not in the
+/// repository, so a build from source has no goblins in it. A release binary
+/// carries a set, and these are the same bytes `--bundle` reads: dump them
+/// once and any build drafts exactly as that release does.
+///
+/// Named from the manifest rather than from a fixed list, so what lands in the
+/// directory is what `from_dir` will look for -- including leaving out a graph
+/// the manifest does not claim.
+#[cfg(feature = "embed")]
+pub fn dump(dir: &Path) -> Result<Vec<(String, usize)>> {
+    let manifest: Manifest = serde_json::from_slice(embedded::MANIFEST)
+        .context("the baked-in manifest.json is not one this build understands")?;
+    std::fs::create_dir_all(dir)
+        .with_context(|| format!("cannot make {}", dir.display()))?;
+    let mut wrote: Vec<(String, usize)> = Vec::new();
+    let mut put = |name: &str, bytes: &'static [u8]| -> Result<()> {
+        let path = dir.join(name);
+        std::fs::write(&path, bytes)
+            .with_context(|| format!("cannot write {}", path.display()))?;
+        wrote.push((name.to_string(), bytes.len()));
+        Ok(())
+    };
+    put("manifest.json", embedded::MANIFEST)?;
+    put(&manifest.graphs.encoder, embedded::ENCODER)?;
+    put(&manifest.graphs.transnet, embedded::TRANSNET)?;
+    put(&manifest.graphs.head, embedded::HEAD)?;
+    if let Some(name) = &manifest.graphs.env_step {
+        put(name, embedded::ENV_STEP)?;
+    }
+    if let Some(name) = &manifest.graphs.mask {
+        put(name, embedded::MASK)?;
+    }
+    Ok(wrote)
+}
+
+/// The same door, in a build that has nothing behind it.
+#[cfg(not(feature = "embed"))]
+pub fn dump(_dir: &Path) -> Result<Vec<(String, usize)>> {
+    anyhow::bail!(
+        "this build has no bundle baked into it, so there is nothing to write \
+         out. --dump-bundle is for a released goblinscript.exe; a build from \
+         source is already being handed a bundle directory with --bundle."
+    )
+}
+
 impl Bundle {
     /// Load from a bundle directory (dev / `--bundle`).
     pub fn from_dir(dir: &Path) -> Result<Self> {

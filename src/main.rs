@@ -352,6 +352,13 @@ struct Cli {
     #[arg(long, value_name = "DIR")]
     bundle: Option<PathBuf>,
 
+    /// Write the goblins out to a folder and stop: the model baked into this
+    /// exe, as the files it was packed from. A GoblinScript built from source
+    /// has no goblins in it -- hand it this folder with --bundle and it drafts
+    /// exactly as this one does.
+    #[arg(long, value_name = "DIR")]
+    dump_bundle: Option<PathBuf>,
+
     /// Time the encoder and exit (development).
     #[arg(long, hide = true)]
     bench: bool,
@@ -2407,6 +2414,38 @@ fn real_main() -> Result<()> {
     // a levelling pass should not need a media toolchain on PATH.
     if cli.music_levels {
         sound::print_levels();
+        return Ok(());
+    }
+
+    // Handing over bytes that are already inside the exe needs none of what
+    // follows: no ffmpeg, no graphics card, no cache. Whoever runs this is
+    // usually standing in front of a build from source that cannot draft yet,
+    // on a machine that may not even be the one that will do the drafting.
+    //
+    // English, like the log and for the same reason: this is a technical
+    // handover meant to be read beside a build, and the paths in it are going
+    // straight into somebody's command line.
+    if let Some(dir) = cli.dump_bundle.clone() {
+        let wrote = bundle::dump(&dir)?;
+        let t = theme();
+        println!(
+            "{} {}",
+            style(TICK).fg(con(t.ok)).bold(),
+            style(format!("the goblins are out, in {}", dir.display())).bold()
+        );
+        for (name, len) in &wrote {
+            let size = match *len {
+                n if n >= 1_000_000 => format!("{:.1} MB", n as f64 / 1e6),
+                n if n >= 1_000 => format!("{:.1} KB", n as f64 / 1e3),
+                n => format!("{n} B"),
+            };
+            println!("       {:<18} {:>9}", name, style(size).fg(con(t.muted)));
+        }
+        println!(
+            "       {}",
+            style(format!("--bundle \"{}\" drafts with them", dir.display()))
+                .fg(con(t.muted))
+        );
         return Ok(());
     }
 

@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.3.4
+
+**GoblinScript is open source.** The app is at
+<https://github.com/ofs69/GoblinScript> under the MIT license -- the picker,
+the video handling, the review page, and the styling that turns what the
+goblins see into strokes. The goblins themselves are not source code: what
+they know is a trained model, and it is still baked into the exe you download.
+
+**Take the goblins with you.** `goblinscript --dump-bundle <FOLDER>` writes
+that model out, and a GoblinScript built from source picks it up with
+`--bundle <FOLDER>` -- from there it drafts exactly as this one does. If you
+are not building anything, you never need it.
+
+None of this changes what the goblins write.
+
 ## 0.3.3
 
 **Take a whole folder at once.** Space on a folder in the picker puts every

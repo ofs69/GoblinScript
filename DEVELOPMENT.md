@@ -750,9 +750,13 @@ cargo build --release                        # no model: needs --bundle <DIR>
 cargo build --release --features embed       # bakes bundle/ into the exe
 ```
 
-Point a dev build at the bundle from a release zip with `--bundle <DIR>` and
-it drafts exactly as the release does. `--features embed` reads `bundle/` at
-compile time and will not build without it.
+A release binary will hand its own bundle over: `goblinscript --dump-bundle
+<DIR>` writes the baked-in graphs back out, byte for byte and named as the
+manifest names them, so the directory it leaves is one `--bundle <DIR>` reads.
+That is the supported way to get a model without the training tree, and it
+needs no GPU and no ffmpeg -- it is bytes out of the exe, dispatched before
+any of that is looked for. `--features embed` reads `bundle/` at compile time
+and will not build without it.
 
 The vision graphs export in fp16, with attention emitted in an overflow-safe
 form (V-JEPA's attention logits exceed fp16's range on real frames; see

@@ -57,9 +57,12 @@ cargo build --release     # builds; needs a bundle to draft anything
 cargo test                # green on a bare checkout
 ```
 
-A build from source has no goblins in it until you point it at a bundle with
-`--bundle <DIR>` -- the one inside a release zip is what the release drafts
-with. `music/` is empty in a checkout and the app runs silent; any General MIDI
+A build from source has no goblins in it. A released `goblinscript.exe` will
+hand its own over -- `goblinscript --dump-bundle <DIR>` writes them out -- and
+`--bundle <DIR>` points your build at them; it then drafts exactly as that
+release does.
+
+`music/` is empty in a checkout and the app runs silent; any General MIDI
 `.mid` files dropped in there become the playlist.
 
 `DEVELOPMENT.md` is the map: what each stage does, why it is shaped that way,
