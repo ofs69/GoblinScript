@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.4.0-rc.2
+
+**A candidate, not a release.** These goblins are on disk and under test;
+the shipped build is still 0.3.4.
+
+**New goblins.** They learned on more videos than the ones before them, they
+look further along a video before they decide, and they were taught to count
+their own movements against the person's. This is the whole of it: there is
+no new command and no new button.
+
+**Less movement that is not in the video.** Where a video is slow, the goblins
+used to put in sudden fast movements the person never wrote. There are about
+15% fewer of them now. Over a whole video they write 26 fast movements each
+minute where the goblins before them wrote 31, and a person writes 22.
+
+**They follow the action a little better**, and they invent slightly fewer
+changes of direction. They do find a few less of the person's changes of
+direction than the goblins before them did -- the poster on the release page
+puts every version next to the other, and next to a person, so you can see
+the trade.
+
+**Everything else is the same.** Your settings, the review page, the languages
+and the folder picker do not change.
+
 ## 0.3.4
 
 **GoblinScript is open source.** The app is at
