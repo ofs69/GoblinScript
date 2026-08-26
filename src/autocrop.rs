@@ -165,6 +165,31 @@ struct RowVote {
     map: Vec<f32>, // mixed attention, grid*grid, sums to 1 (escape instrument)
 }
 
+/// Cut times (ms) -> the frames a shot may START on: ascending, deduplicated,
+/// and never frame 0.
+///
+/// Those three rules are what make the emitted plan a strictly ordered segment
+/// list, which is what `SegmentedDecoder` requires of one. Frame 0 is already
+/// every clip's first shot start, so a cut landing on it describes a shot of
+/// zero frames -- one no sampled row can fall in, which therefore takes the
+/// clip-global rect and then collides with the shot that really does begin
+/// there. Two cuts inside one frame's width are that same collision arriving
+/// the other way, and a `--cuts` file is under no obligation to arrive sorted.
+///
+/// `boundaries::cut_rows` holds these rules on the ROW grid, for the model's
+/// own cut-flag channel. A shot plan needs them on the FRAME grid.
+fn shot_frames(cuts_ms: &[f64], fps: f64) -> Vec<usize> {
+    let mut f: Vec<usize> = cuts_ms
+        .iter()
+        .filter(|c| c.is_finite())
+        .map(|&c| (c / 1000.0 * fps).round() as usize)
+        .filter(|&f| f > 0)
+        .collect();
+    f.sort_unstable();
+    f.dedup();
+    f
+}
+
 /// The probe: sparse native-rate windows -> attention votes -> the plan.
 ///
 /// `cuts_ms` are cut times in MILLISECONDS (as `boundaries::find_cuts`
@@ -195,10 +220,7 @@ pub fn probe(
     }
     pb.set_length(starts.len() as u64);
 
-    let cut_frames: Vec<usize> = cuts_ms
-        .iter()
-        .map(|&c| (c / 1000.0 * man.grid_fps).round() as usize)
-        .collect();
+    let cut_frames = shot_frames(cuts_ms, man.grid_fps);
     let shot_of = |frame: usize| cut_frames.partition_point(|&c| c <= frame);
 
     let mut x: Vec<u8> = Vec::with_capacity((man.clip_len / 2) * 2 * res * res * 3);
@@ -785,6 +807,41 @@ mod tests {
         assert_eq!(percentile(&v, 50.0), 2.5); // np.percentile linear
         assert!((percentile(&v, 10.0) - 1.3).abs() < 1e-12);
         assert_eq!(percentile(&[7.0], 90.0), 7.0);
+    }
+
+    /// A cut on frame 0 is the one every clip already has. Kept, it hands the
+    /// plan two segments starting on frame 0 and the decoder refuses the run.
+    #[test]
+    fn a_cut_on_the_first_frame_is_not_a_shot_start() {
+        // the reported clip: cuts at 0 and 2966.67 ms on the 30 fps grid
+        assert_eq!(shot_frames(&[0.0, 2966.67, 19933.33], 30.0), vec![89, 598]);
+        // and the same list with no frame-0 cut is untouched
+        assert_eq!(shot_frames(&[2966.67, 19933.33], 30.0), vec![89, 598]);
+    }
+
+    /// Two cuts inside one frame's width are one shot start, not two.
+    #[test]
+    fn cuts_landing_on_one_frame_collapse() {
+        // 30.0, 30.15 and 30.3 frames all round onto frame 30
+        assert_eq!(shot_frames(&[1000.0, 1005.0, 1010.0], 30.0), vec![30]);
+        assert_eq!(shot_frames(&[1000.0, 1100.0], 30.0), vec![30, 33]);
+    }
+
+    /// A `--cuts` file is under no obligation to arrive sorted, and
+    /// `partition_point` is only answerable on an ascending list.
+    #[test]
+    fn an_unsorted_cut_list_still_yields_an_ordered_plan() {
+        let f = shot_frames(&[19933.33, 0.0, 2966.67, 2966.67], 30.0);
+        assert_eq!(f, vec![89, 598]);
+        assert!(f.windows(2).all(|w| w[0] < w[1]));
+    }
+
+    /// Nothing in a cuts file is trusted to be a number a frame index can be
+    /// made of -- an infinity would otherwise saturate to usize::MAX.
+    #[test]
+    fn unusable_cut_times_are_dropped() {
+        let f = shot_frames(&[f64::NAN, f64::INFINITY, -500.0, 1000.0], 30.0);
+        assert_eq!(f, vec![30]);
     }
 
     fn vote(bbox: (usize, usize, usize, usize), conc: f32) -> RowVote {
