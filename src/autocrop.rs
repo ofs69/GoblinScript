@@ -122,6 +122,23 @@ impl Plan {
         }
     }
 
+    /// Can a segmented decode actually run this plan?
+    ///
+    /// The two rules `SegmentedDecoder::open` enforces: the first segment
+    /// starts the clip, and every later one starts strictly after the one
+    /// before. A plan built by `probe` cannot break them -- `shot_frames` sees
+    /// to that -- but a plan read back off disk was built by whatever wrote
+    /// it, and one written before the frame-0 rule existed carries two
+    /// segments on frame 0. Every other field of that cache entry still
+    /// matches, the checkpoint included, so nothing else would refuse it and
+    /// the run would stop at ENCODE exactly as it did the first time.
+    /// Checking here is what lets the cache heal: the plan is turned down, the
+    /// probe runs again, and the corrected plan takes its place on disk.
+    pub fn is_runnable(&self) -> bool {
+        self.segs.first().map(|s| s.0) == Some(0)
+            && self.segs.windows(2).all(|w| w[0].0 < w[1].0)
+    }
+
     /// A stable identity for the plan, part of the latent cache key: cached
     /// latents from a different plan (or none) must not be reused.
     pub fn key(&self) -> String {
@@ -755,6 +772,7 @@ pub fn read_cached(dir: &Path, man: &Manifest, gamma: f64) -> Option<Plan> {
             grid: p.grid,
             escape_share: p.escape_share,
         })
+        .filter(Plan::is_runnable)
 }
 
 pub fn write_cached(dir: &Path, man: &Manifest, plan: &Plan, gamma: f64) -> Result<()> {
@@ -842,6 +860,33 @@ mod tests {
     fn unusable_cut_times_are_dropped() {
         let f = shot_frames(&[f64::NAN, f64::INFINITY, -500.0, 1000.0], 30.0);
         assert_eq!(f, vec![30]);
+    }
+
+    fn plan_of(starts: &[usize]) -> Plan {
+        Plan {
+            segs: starts.iter().map(|&f| (f, (0, 0, 16, 16))).collect(),
+            grid: 24,
+            escape_share: 0.0,
+            placed: 0,
+        }
+    }
+
+    /// A cache written before the frame-0 rule existed must not be handed
+    /// back: every other field of it still matches, so this is the only thing
+    /// standing between a stale plan and the same failure a second time.
+    #[test]
+    fn a_plan_that_starts_twice_on_frame_zero_is_not_runnable() {
+        assert!(!plan_of(&[0, 0, 89, 598]).is_runnable());
+        assert!(plan_of(&[0, 89, 598, 715, 1235]).is_runnable());
+    }
+
+    /// A plan that does not open the clip cannot be run either -- the decoder
+    /// has nothing to deliver the frames before its first segment.
+    #[test]
+    fn a_plan_must_open_on_the_first_frame() {
+        assert!(!plan_of(&[89, 598]).is_runnable());
+        assert!(!plan_of(&[]).is_runnable());
+        assert!(plan_of(&[0]).is_runnable());
     }
 
     fn vote(bbox: (usize, usize, usize, usize), conc: f32) -> RowVote {
