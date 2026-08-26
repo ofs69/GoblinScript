@@ -38,6 +38,11 @@ counts it as a scene change. Two scene changes in one frame become one scene
 change. A list of scene changes from a file can have any order. You no longer
 need `--no-autocrop` for this problem.
 
+GoblinScript keeps the crop plan for each video in its cache. A plan from an
+older version can contain this fault. GoblinScript now finds such a plan and
+makes it again. Thus a video that failed before makes a script now. You do not
+have to delete the cache.
+
 **A new option selects the decoder: `--hwaccel auto|on|off`.**
 
 The option tells GoblinScript if the graphics card decodes the video in the
