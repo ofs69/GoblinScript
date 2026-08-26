@@ -26,39 +26,43 @@ and the folder picker do not change.
 
 ## 0.3.5
 
-**A video that opens on a cover frame drafts again.** Some files begin with a
-single still before the film proper starts, and the goblins counted that as a
-scene change on the very first frame. That left the first scene with no frames
-in it at all, and the run stopped as `encode` began, saying `segment plan is
-not strictly ordered`. The first frame is where every video already starts, so
-it is no longer also a change; two changes closer together than a single frame
-are now one change; and a list of scene changes handed in from outside no
-longer has to arrive in order. `--no-autocrop` was the way round this and is
-not needed any more.
+**A video that starts with a cover frame makes a script again.**
 
-**You can say who reads the video.** `--hwaccel auto|on|off` chooses whether
-the graphics card decodes a video while it is being normalized. The goblins
-write the same normalized copy either way -- that is now true frame for frame,
-and it was not quite true before: a run that got the card and a run that fell
-back to the processor wrote very slightly different files under the same name.
-Which side is quicker is a property of your machine rather than of your video.
-On a quick processor, asking the card measured about two and a half times
-slower here, because every frame comes back from the card at full size. Beside
-a modest processor and a strong card it can go the other way. If normalize is
-your slow stage, it is worth timing one video both ways.
+Some videos have one still image before the film. GoblinScript counted this
+image as a scene change at frame 0. The first scene then had no frames, and
+the run stopped at the `encode` stage with the message `segment plan is not
+strictly ordered`.
 
-**Nothing is carried further than it is needed.** A video above 30 frames a
-second used to be flattened and scaled at its own rate and only then thinned
-to 30. It is thinned first now. The same frames come out; fewer are carried to
-get there.
+Frame 0 is always the start of the first scene, so GoblinScript no longer
+counts it as a scene change. Two scene changes in one frame become one scene
+change. A list of scene changes from a file can have any order. You no longer
+need `--no-autocrop` for this problem.
 
-**The goblins mention when a video is not their shape.** They learned on 16:9,
-and they see every video squashed into a square, so a portrait clip reaches
-them stretched wider than it really is. Nothing later can take that back, so
-they now say so under `normalize` -- worth knowing when a draft of a tall clip
-comes back weak.
+**A new option selects the decoder: `--hwaccel auto|on|off`.**
 
-Other than that same as v0.3.4.
+The option tells GoblinScript if the graphics card decodes the video in the
+`normalize` stage. The two decoders now write the same file, frame by frame.
+Before this release, they wrote different files with the same name.
+
+The faster decoder depends on your computer, not on your video. On a fast
+processor, the graphics card was 2.5 times slower in our test, because each
+frame comes back at full size. With a slow processor and a strong graphics
+card, the result can be different. If the `normalize` stage is slow, measure
+one video with `on` and with `off`.
+
+**The `normalize` stage does less work.**
+
+For a video with more than 30 frames each second, GoblinScript now reduces
+the frame rate first. Before, it did this last. The output frames are the same.
+
+**GoblinScript tells you when a video has a different shape.**
+
+The goblins learned from 16:9 videos, and they see each video compressed into
+a square. A tall video is therefore too wide for them. The `normalize` stage
+now shows a message about this. The message can tell you why the script for a
+tall video is bad.
+
+All other functions are the same as v0.3.4.
 
 ## 0.3.4
 
