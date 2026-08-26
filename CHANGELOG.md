@@ -3,7 +3,7 @@
 ## 0.4.0-rc.2
 
 **A candidate, not a release.** These goblins are on disk and under test;
-the shipped build is still 0.3.5.
+the shipped build is still 0.3.6.
 
 **New goblins.** They learned on more videos than the ones before them, they
 look further along a video before they decide, and they were taught to count
@@ -23,6 +23,33 @@ the trade.
 
 **Everything else is the same.** Your settings, the review page, the languages
 and the folder picker do not change.
+
+## 0.3.6
+
+**`--hwaccel on` is now faster than `off`, not slower.** The graphics card
+decodes the video and keeps each frame in its own memory. GoblinScript lowers
+the frame rate there, so the frames it does not keep never cross to the
+processor. Before, the card sent back every frame at full size, which is no
+help to the processor: it is the processor's work plus a bus trip. On an 8K
+60 fps SBS VR video, one minute of `normalize` takes 27 seconds where a decode
+without the card takes 44 seconds. A video with more than 8 bits a colour
+costs no more than an 8-bit video.
+
+**All graphics cards, not one make.** GoblinScript asks the operating system
+for a decoder -- D3D11VA or DXVA2 on Windows, VAAPI on Linux, Vulkan on
+either -- and each of these reaches an AMD, Intel or NVIDIA card through the
+same call. There is no option here that belongs to one make of card.
+
+The written video is the same video, byte for byte. This was measured frame by
+frame, at 8 bits and at 10 bits, through each of the decoders.
+
+If no decoder can take the video, or if the number of bits a colour cannot be
+read, GoblinScript decodes with the processor as before. `--hwaccel on` now
+also applies to flat videos; `--hwaccel auto` continues to use the card for VR
+videos only.
+
+**The goblins are the same goblins.** This release changes only how quickly a
+video is prepared, not what is written into the funscript.
 
 ## 0.3.5
 

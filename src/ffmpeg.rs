@@ -115,6 +115,64 @@ fn first_dims(report: &str) -> Option<(usize, usize)> {
     })
 }
 
+/// The semi-planar format a hardware decode of this source lands in: `p010le`
+/// for a source carrying more than 8 bits a component, `nv12` otherwise.
+///
+/// This is what `hwdownload` has to be TOLD. It takes the first format it is
+/// given and fails outright on a frame that is in another one -- it will not
+/// choose from a list the way the software chain's pin does -- so the depth
+/// has to be known before the chain is built.
+///
+/// Getting it wrong is not merely slower. `v360` resamples every pixel it
+/// touches, so it has to be handed the same frame either way: a chain that
+/// takes a 10-bit source down to 8 before the projection projects a shallower
+/// picture than the software chain does, and the encoder's own 8-bit step at
+/// the tail cannot put that back. Named the source's own depth, the two are
+/// the same frame.
+///
+/// A source whose depth cannot be read gets `None` and decodes in software.
+/// Guessing is the one thing not to do here: `hwdownload` would refuse a wrong
+/// guess for `p010le`, but a card told to hand back `nv12` for a 10-bit stream
+/// converts down to it without complaint, so half of a wrong guess is caught
+/// and half is silent. Declining costs that one source some speed and keeps
+/// its normalize the file every other route writes.
+///
+/// The depth comes off `pix_fmt` rather than `bits_per_raw_sample`, which a
+/// 10-bit HEVC stream commonly reports as `N/A`.
+fn surface_fmt(path: &Path) -> Option<&'static str> {
+    let out = Command::new("ffprobe")
+        .args([
+            "-v",
+            "error",
+            "-select_streams",
+            "v:0",
+            "-show_entries",
+            "stream=pix_fmt",
+            "-of",
+            "default=noprint_wrappers=1:nokey=1",
+        ])
+        .arg(path)
+        .output()
+        .ok()
+        .filter(|o| o.status.success())?;
+    let fmt = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    (!fmt.is_empty()).then(|| if deep_pix_fmt(&fmt) { "p010le" } else { "nv12" })
+}
+
+/// Does this `pix_fmt` carry more than 8 bits a component?
+///
+/// The depth is the number that FOLLOWS the component layout, so it is read
+/// from behind the last `p` and not merely looked for -- `yuv410p` is 8-bit
+/// and contains a `10` that means something else entirely.
+fn deep_pix_fmt(fmt: &str) -> bool {
+    let tail = match fmt.rfind('p') {
+        Some(i) => &fmt[i + 1..],
+        None => return false,
+    };
+    let digits = tail.trim_end_matches("le").trim_end_matches("be");
+    digits.parse::<u32>().is_ok_and(|b| b > 8)
+}
+
 /// Duration in milliseconds, via ffprobe.
 pub fn duration_ms(path: &Path) -> Result<f64> {
     let out = Command::new("ffprobe")
@@ -210,13 +268,21 @@ fn playable(container: &str, vcodec: &str, acodec: Option<&str>) -> bool {
 
 /// Who decodes the source during normalize.
 ///
-/// Whichever runs, the normalized file is the same file -- `norm_filter`'s
-/// planar pin sees to that -- so this is a speed dial and nothing else, and
-/// the cache is right to be blind to it. Which end of the dial is faster is a
-/// property of the MACHINE, not of the video: the graphics card decodes for
-/// free but hands every frame back across the bus at full size, and on a
-/// desktop CPU that trip has measured slower than simply decoding in software.
-/// On a modest CPU beside a strong card it is the other way about.
+/// Whichever runs, the normalized file is the same file -- `norm_filter` sees
+/// to that at both ends of the dial -- so this is a speed dial and nothing
+/// else, and the cache is right to be blind to it.
+///
+/// The card is asked to KEEP the frame in its own memory, so the rate gate
+/// runs there and only the frames the gate keeps ever cross the bus. That
+/// ordering is the whole of the speed -- a 60 fps source hands back half as
+/// many frames -- and it is why the old ask measured SLOWER than software: a
+/// card that hands every full-size frame straight back has done the CPU no
+/// favour, it has added a bus trip to the CPU's work.
+///
+/// Nothing about that is a vendor's to provide, which is why every backend in
+/// `HW_BACKENDS` reaches the same file by the same route. On an 8K 60 fps SBS
+/// source, one minute of normalize measures 27s through D3D11VA, 29s through
+/// Vulkan and 31s through DXVA2, against 44s in software.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
 pub enum HwAccel {
     /// Ask for VR sources, decode flat ones in software.
@@ -236,6 +302,63 @@ impl HwAccel {
             HwAccel::Off => false,
         }
     }
+}
+
+/// The decode backends, and the frame format each hands the filter graph.
+/// Tried in this order until one takes the source.
+///
+/// **Every one of these asks the OPERATING SYSTEM for a decoder, not a
+/// vendor.** D3D11VA is Windows' own and reaches an NVIDIA, AMD or Intel card
+/// through the same call; VAAPI is that on Linux; Vulkan is that on either,
+/// and catches the pairing the first two miss. So one list covers every
+/// machine, and no card is a better citizen here than any other.
+///
+/// A vendor's own backend can be quicker -- CUDA measures 25s against
+/// D3D11VA's 27s on the 8K source, about a tenth of the GPU path -- and it is
+/// still not worth having. That tenth buys a per-vendor branch in a stage
+/// where correctness is the whole point, on hardware this tree cannot test,
+/// and the neutral list already carries the other 90% to everyone.
+///
+/// The second name is not cosmetic: a backend's frame format is its own
+/// (`d3d11va` hands back `d3d11`, `dxva2` hands back `dxva2_vld`), and naming
+/// the backend where the format belongs fails the filter graph, not the
+/// device -- which reads as "this card cannot do it" when the card is fine.
+const HW_BACKENDS: &[(&str, &str)] = &[
+    ("d3d11va", "d3d11"),
+    ("vaapi", "vaapi"),
+    ("vulkan", "vulkan"),
+    ("dxva2", "dxva2_vld"),
+];
+
+/// Which backend this machine can actually decode with, decided once and kept
+/// for the life of the process.
+///
+/// It is decided by DOING it: one frame of a real source, downloaded the way
+/// the normalize downloads. Nothing short of that is an answer -- a backend
+/// ffmpeg lists is a backend it was BUILT with, which says nothing about the
+/// card in the machine, and a device that opens can still refuse the codec.
+///
+/// One pass costs a machine with no usable card about a second per backend,
+/// once, against a normalize measured in minutes. A machine that has one
+/// usually answers on the first.
+fn hw_backend(src: &Path, surface: &str) -> Option<&'static (&'static str, &'static str)> {
+    static CHOSEN: std::sync::OnceLock<Option<usize>> = std::sync::OnceLock::new();
+    let i = CHOSEN.get_or_init(|| {
+        HW_BACKENDS.iter().position(|(hw, fmt)| {
+            Command::new("ffmpeg")
+                .args(["-v", "error", "-nostdin", "-hwaccel", hw, "-hwaccel_output_format", fmt])
+                .arg("-i")
+                .arg(src)
+                .args(["-map", "0:v:0", "-frames:v", "1"])
+                .args(["-vf", &format!("hwdownload,format={surface}")])
+                .args(["-f", "null", "-"])
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+                .is_ok_and(|s| s.success())
+        })
+    });
+    i.map(|i| &HW_BACKENDS[i])
 }
 
 /// Normalize a source video into the encode spec the model was trained on.
@@ -260,18 +383,26 @@ pub fn transcode(
     mut on_progress: impl FnMut(f64),
 ) -> Result<()> {
     let part = dst.with_extension("part.mp4");
-    // Asking is only ever an ATTEMPT. Some driver/codec pairs accept
-    // `-hwaccel auto` and then fail -- an 8K H.264 stream is past what a
-    // hardware decoder will take, where the same size in HEVC is not -- so a
-    // failure retries in software before it becomes an error (the same
-    // fallback `vr_project.py`'s renderer runs for the same reason). The
-    // planar pin in `norm_filter` is what makes that retry free: whichever
-    // decoder ends up running, the file it writes is the same file.
-    let try_hw = hw.wanted(vr.is_some());
-    match run_transcode(src, &part, spec, total_ms, vr, try_hw, &mut on_progress) {
+    // Asking is only ever an ATTEMPT. `hw_backend` has already decoded a frame
+    // through whichever backend it names, so the common refusals -- no card,
+    // no driver, a codec the card will not take -- are behind us; what is left
+    // is a card that takes the frame and then gives up somewhere in the middle
+    // of a long source. That retries in software before it becomes an error
+    // (the same fallback `vr_project.py`'s renderer runs for the same reason),
+    // and `norm_filter` is what makes the retry free: whichever decoder ends
+    // up running, the file it writes is the same file.
+    //
+    // The card is offered only when the SOURCE's depth is readable, because
+    // `hwdownload` has to be named a format and there is nothing safe to guess.
+    let hw = hw
+        .wanted(vr.is_some())
+        .then(|| surface_fmt(src))
+        .flatten()
+        .filter(|surface| hw_backend(src, surface).is_some());
+    match run_transcode(src, &part, spec, total_ms, vr, hw, &mut on_progress) {
         Ok(()) => {}
-        Err(e) if try_hw && !crate::cancel::is_cancel(&e) => {
-            run_transcode(src, &part, spec, total_ms, vr, false, &mut on_progress)
+        Err(e) if hw.is_some() && !crate::cancel::is_cancel(&e) => {
+            run_transcode(src, &part, spec, total_ms, vr, None, &mut on_progress)
                 .context("the source would not decode, with or without the graphics card")?;
         }
         Err(e) => return Err(e),
@@ -283,29 +414,43 @@ pub fn transcode(
     Ok(())
 }
 
-/// The normalize chain: the planar pin, the fps gate, whatever flattening a VR
-/// source needs, then the squash to the spec height.
+/// The normalize chain: the fps gate, the planar turn, whatever flattening a
+/// VR source needs, then the squash to the spec height.
 ///
-/// **The planar pin leads**, and it is what makes a hardware decode and a
+/// **The gate leads**, the way it leads in every other decode chain here. A 60
+/// fps source otherwise carries every one of its frames through the format
+/// turn, `v360` and the scaler, and drops half of them at the tail. All three
+/// are per-frame and leave timestamps alone, so which side of them the gate
+/// sits on cannot change WHICH frames come out -- only how many were carried
+/// to produce them, which on an 8K source is the difference the whole stage is
+/// made of.
+///
+/// **Then the planar turn**, and it is what makes a hardware decode and a
 /// software one the same file. A hardware decoder hands its frames back
 /// semi-planar -- `nv12` for an 8-bit source, `p010le` for a 10-bit one --
-/// where the software decoder hands back `yuv420p` and `yuv420p10le`. The
-/// picture is identical either way (the luma plane checksums match), but
-/// swscale reaches a scaled frame by a different route from each, and the two
-/// routes do not agree to the last bit. So a run that got the graphics card
-/// wrote a different normalize from the same run that fell back to software --
-/// on a cache key that cannot tell them apart. Naming BOTH planar formats
-/// fixes that without costing a conversion: the filter picks whichever of them
-/// the frame is already in, so a software decode passes through untouched at
-/// either bit depth, and only the semi-planar hardware frame is turned over.
+/// where the software decoder hands back `yuv420p` and `yuv420p10le`, and
+/// swscale reaches a scaled frame by a different route from each. So the two
+/// sides need the same planar frame in hand before anything downstream reads
+/// it, on a cache key that cannot tell them apart.
 ///
-/// **Then the fps gate**, the way it leads in every other decode chain here. A
-/// 60 fps source otherwise hands every one of its frames to `v360` and the
-/// scaler and drops half of them at the tail. Both filters are per-frame and
-/// leave timestamps alone, so which side of them the gate sits on cannot
-/// change WHICH frames come out; only how many were carried to produce them.
-fn norm_filter(spec: &Transcode, vr: Option<&crate::vr::Config>) -> String {
-    let mut vf = format!("format=yuv420p|yuv420p10le,fps={}", spec.fps);
+/// Each side reaches that frame where it is already standing. Software names
+/// BOTH planar depths and pays nothing: a software decode is already in one of
+/// them, so the filter picks that one and passes it through untouched. A
+/// hardware decode brings its frame back semi-planar at the source's own depth
+/// -- `surface_fmt` is what names it -- and then joins the software chain at
+/// the same pin, which turns it planar without touching the depth. Both sides
+/// hand the same frame to `v360`.
+///
+/// The download sits BEHIND the gate, and that is the whole of the speed: the
+/// frames the gate drops are dropped on the card, and never cross the bus at
+/// all. Nothing here is a vendor's to provide -- there is no vendor filter in
+/// this chain -- so every backend writes the same file by the same route.
+fn norm_filter(spec: &Transcode, vr: Option<&crate::vr::Config>, hw: Option<&str>) -> String {
+    let mut vf = format!("fps={}", spec.fps);
+    if let Some(surface) = hw {
+        vf.push_str(&format!(",hwdownload,format={surface}"));
+    }
+    vf.push_str(",format=yuv420p|yuv420p10le");
     if let Some(v) = vr {
         vf.push(',');
         vf.push_str(&v.filter_prefix(spec.height));
@@ -322,17 +467,16 @@ fn run_transcode(
     spec: &Transcode,
     total_ms: f64,
     vr: Option<&crate::vr::Config>,
-    hw: bool,
+    hw: Option<&str>,
     on_progress: &mut impl FnMut(f64),
 ) -> Result<()> {
-    let vf = norm_filter(spec, vr);
+    let vf = norm_filter(spec, vr, hw);
     let gop = (spec.fps * 2.0).round().max(1.0) as i64;
 
     let mut cmd = Command::new("ffmpeg");
     cmd.args(["-y", "-nostdin", "-loglevel", "error"]);
     // Input options, before -i: a VR range trim seeks the SOURCE (frame-exact
-    // under re-encode), and hardware decode has to be asked for before the
-    // input it applies to. Both fall away entirely on the flat path.
+    // under re-encode), and it falls away entirely on the flat path.
     if let Some(v) = vr {
         let dur = duration_ms(src).unwrap_or(0.0);
         let (t0, t1) = v.range(dur);
@@ -340,9 +484,16 @@ fn run_transcode(
             cmd.args(["-ss", &format!("{:.3}", t0 / 1000.0)]);
             cmd.args(["-t", &format!("{:.3}", (t1 - t0) / 1000.0)]);
         }
-        if hw {
-            cmd.args(["-hwaccel", "auto"]);
-        }
+    }
+    // The card is asked for before the input it applies to, and it is asked
+    // for whatever the source is -- the dial above already decided whether a
+    // flat one gets the offer. A backend is NAMED rather than left to `auto`
+    // because the output format is the point, and `auto` has no format to
+    // name: it picks a decoder and then hands every frame straight back, where
+    // pinning the frame to the device is what lets the gate drop frames that
+    // then never cross the bus.
+    if let Some((backend, fmt)) = hw.and_then(|surface| hw_backend(src, surface)) {
+        cmd.args(["-hwaccel", backend, "-hwaccel_output_format", fmt]);
     }
     cmd.arg("-i")
         .arg(src)
@@ -614,7 +765,7 @@ impl SegmentedDecoder {
 
 #[cfg(test)]
 mod tests {
-    use super::{first_dims, norm_filter, playable, Decoder, HwAccel, SegmentedDecoder};
+    use super::{deep_pix_fmt, first_dims, norm_filter, playable, surface_fmt, HW_BACKENDS, Decoder, HwAccel, SegmentedDecoder};
     use crate::bundle::Transcode;
     use std::path::{Path, PathBuf};
 
@@ -631,36 +782,126 @@ mod tests {
         Transcode { height: 480, fps: 30.0, crf: 23, preset: "medium".to_string() }
     }
 
-    /// The pin comes first so a hardware decode and a software one hand the
-    /// same frames to everything downstream, and the gate comes next so the
-    /// filters behind it are never handed frames that get dropped anyway.
+    /// The gate comes first so nothing behind it is ever handed a frame that
+    /// gets dropped anyway -- the format turn included, which is the one the
+    /// card would otherwise pay for twice over on a 60 fps source.
     #[test]
-    fn the_normalize_chain_pins_the_format_then_gates_the_rate() {
-        let f = norm_filter(&spec(), None);
-        assert_eq!(f, "format=yuv420p|yuv420p10le,fps=30,scale=-2:480:flags=bicubic");
+    fn the_normalize_chain_gates_the_rate_then_turns_the_format() {
+        let f = norm_filter(&spec(), None, None);
+        assert_eq!(f, "fps=30,format=yuv420p|yuv420p10le,scale=-2:480:flags=bicubic");
     }
 
-    /// Naming both planar depths is what keeps the pin free: a software decode
-    /// of either is already in one of them, so nothing is converted and the
-    /// file is the one v0.3.4 wrote.
+    /// Naming both planar depths is what keeps the software turn free: a
+    /// software decode of either is already in one of them, so nothing is
+    /// converted.
     #[test]
-    fn the_pin_offers_both_planar_depths() {
-        let f = norm_filter(&spec(), None);
-        let pin = f.split(',').next().unwrap();
-        assert!(pin.contains("yuv420p|") && pin.contains("yuv420p10le"), "{pin}");
+    fn the_software_turn_offers_both_planar_depths() {
+        let f = norm_filter(&spec(), None, None);
+        let turn = f.split(',').nth(1).unwrap();
+        assert!(turn.contains("yuv420p|") && turn.contains("yuv420p10le"), "{turn}");
     }
 
-    /// A VR source flattens BEHIND the gate: v360 is the costliest filter in
-    /// the graph and must never run on a frame the gate is about to drop.
+    /// The download sits BEHIND the gate, so the frames the gate drops are
+    /// dropped on the card and never cross the bus -- and it joins the SAME
+    /// pin the software chain uses, so both sides hand `v360` one frame.
+    #[test]
+    fn the_card_gates_before_the_bus_then_joins_the_pin() {
+        let f = norm_filter(&spec(), None, Some("nv12"));
+        assert_eq!(
+            f,
+            "fps=30,hwdownload,format=nv12,format=yuv420p|yuv420p10le,scale=-2:480:flags=bicubic"
+        );
+        let gate = f.find("fps=30").expect("gated");
+        let bus = f.find("hwdownload").expect("brought back");
+        let pin = f.find("format=yuv420p|").expect("pinned");
+        assert!(gate < bus && bus < pin, "{f}");
+    }
+
+    /// No filter in either chain belongs to a vendor. The one thing a backend
+    /// contributes is the format its own frames arrive in, and that is a name
+    /// passed IN -- so the same chain serves every card there is.
+    #[test]
+    fn neither_chain_names_a_vendor() {
+        for hw in [None, Some("nv12"), Some("p010le")] {
+            let f = norm_filter(&spec(), Some(&crate::vr::Config::default()), hw);
+            for vendor in ["cuda", "npp", "qsv", "vaapi", "amf", "vulkan", "opencl"] {
+                assert!(!f.contains(vendor), "{vendor} in {f}");
+            }
+        }
+    }
+
+    /// A 10-bit source keeps its depth ACROSS the bus, so `v360` is handed the
+    /// same frame the software chain hands it. Taking the depth down early
+    /// projects a shallower picture, and the encoder's 8-bit tail cannot put
+    /// it back.
+    #[test]
+    fn a_deep_source_stays_deep_until_the_encoder() {
+        let f = norm_filter(&spec(), Some(&crate::vr::Config::default()), Some("p010le"));
+        assert!(f.starts_with("fps=30,hwdownload,format=p010le,format=yuv420p|yuv420p10le,"), "{f}");
+        let v360 = f.find("v360=").expect("flattened");
+        assert!(!f[..v360].contains(",format=yuv420p,"), "depth dropped before the projection: {f}");
+    }
+
+    /// A source whose depth cannot be read declines the card entirely. Half a
+    /// wrong guess would be caught -- `hwdownload` refuses a frame that is not
+    /// in the format it was named -- and the other half would not: a card told
+    /// `nv12` for a 10-bit stream converts down to it without complaint.
+    #[test]
+    fn an_unreadable_source_declines_the_card() {
+        let missing = std::env::temp_dir()
+            .join(format!("gs_no_such_source_{}.mp4", std::process::id()));
+        assert_eq!(surface_fmt(&missing), None);
+    }
+
+    /// Every backend is one the OPERATING SYSTEM offers, reaching whatever
+    /// card is behind it, and each carries the frame format that backend
+    /// actually hands back -- naming the backend twice fails the filter graph
+    /// rather than the device, which reads as a card that cannot do the job.
+    #[test]
+    fn the_backends_are_os_generic_and_carry_their_own_format() {
+        for (backend, fmt) in HW_BACKENDS {
+            assert!(
+                matches!(*backend, "d3d11va" | "vaapi" | "vulkan" | "dxva2"),
+                "{backend} is a vendor's, not the system's"
+            );
+            assert!(!fmt.is_empty());
+        }
+        let fmt_of = |b: &str| HW_BACKENDS.iter().find(|(x, _)| *x == b).unwrap().1;
+        assert_eq!(fmt_of("d3d11va"), "d3d11");
+        assert_eq!(fmt_of("dxva2"), "dxva2_vld");
+    }
+
+    /// The depth is the number BEHIND the layout, not a number anywhere in
+    /// the name: `yuv410p` is 8-bit and carries a `10` that is a chroma
+    /// layout. The semi-planar names the card hands back count too.
+    #[test]
+    fn the_depth_is_read_from_behind_the_layout() {
+        for shallow in ["yuv420p", "yuvj420p", "yuv410p", "nv12", "rgb24"] {
+            assert!(!deep_pix_fmt(shallow), "{shallow} read as deep");
+        }
+        for deep in ["yuv420p10le", "yuv420p10be", "yuv422p10le", "yuv444p12le", "p010le"] {
+            assert!(deep_pix_fmt(deep), "{deep} read as shallow");
+        }
+    }
+
+    /// A VR source flattens BEHIND the gate, whoever decoded it: v360 is the
+    /// costliest filter in the graph and must never run on a frame the gate is
+    /// about to drop. It also runs on the CPU either way -- there is no CUDA
+    /// v360 -- so on the card's path it sits behind the bus as well.
     #[test]
     fn vr_flattening_sits_behind_the_gate() {
         let cfg = crate::vr::Config::default();
-        let f = norm_filter(&spec(), Some(&cfg));
-        let gate = f.find("fps=30").expect("gated");
-        let v360 = f.find("v360=").expect("flattened");
-        let scale = f.find("scale=-2:480").expect("scaled");
-        assert!(gate < v360 && v360 < scale, "{f}");
-        assert!(f.starts_with("format=yuv420p|yuv420p10le,fps=30,crop="), "{f}");
+        for hw in [None, Some("yuv420p"), Some("yuv420p10le")] {
+            let f = norm_filter(&spec(), Some(&cfg), hw);
+            let gate = f.find("fps=30").expect("gated");
+            let v360 = f.find("v360=").expect("flattened");
+            let scale = f.find("scale=-2:480").expect("scaled");
+            assert!(gate < v360 && v360 < scale, "{f}");
+            assert!(f.starts_with("fps=30,"), "{f}");
+            if hw.is_some() {
+                assert!(f.find("hwdownload").unwrap() < v360, "{f}");
+            }
+        }
     }
 
     /// The dial, spelled out: only `on` reaches a flat source, only `off`
@@ -924,6 +1165,48 @@ mod tests {
             }
         }
         best
+    }
+
+    /// THE cache check: the dial is a speed dial, so both ends of it have to
+    /// write the same BYTES. The cache keys the normalize on the source and
+    /// the spec and cannot see who decoded, so a card that wrote its own
+    /// picture would be served to a later run that asked for software.
+    ///
+    /// Both depths run, because they fail differently: 8-bit is the case where
+    /// a wrong format is quietly converted, 10-bit the case where the whole
+    /// projection would run a depth down. A machine with no usable card still
+    /// passes -- it decodes both in software, which is the fallback working.
+    #[test]
+    #[ignore = "transcodes with the real ffmpeg; run explicitly: cargo test -- --ignored card"]
+    fn the_card_and_the_processor_write_the_same_bytes() {
+        let dir = clock_dir();
+        let spec = crate::bundle::Transcode {
+            height: 240,
+            fps: 30.0,
+            crf: 23,
+            preset: "veryfast".to_string(),
+        };
+        for (depth, pix, codec) in
+            [("8bit", "yuv420p", "libx264"), ("10bit", "yuv420p10le", "libx265")]
+        {
+            let src = dir.join(format!("card_{depth}.mp4"));
+            ffmpeg_ok(&[
+                "-f", "lavfi", "-i", "testsrc2=s=640x360:r=60:d=4",
+                "-c:v", codec, "-pix_fmt", pix, "-preset", "veryfast",
+                src.to_str().unwrap(),
+            ]);
+            let mut out = Vec::new();
+            for (name, dial) in [("card", HwAccel::On), ("cpu", HwAccel::Off)] {
+                let norm = dir.join(format!("card_{depth}_{name}.mp4"));
+                let _ = std::fs::remove_file(&norm);
+                super::transcode(&src, &norm, &spec, 4000.0, None, dial, |_| {}).unwrap();
+                out.push(std::fs::read(&norm).unwrap());
+            }
+            assert_eq!(
+                out[0], out[1],
+                "{depth}: the card and the processor wrote different normalizes"
+            );
+        }
     }
 
     /// THE deploy clock check: normalizing a source must not move its content
