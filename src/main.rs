@@ -304,14 +304,16 @@ struct Cli {
 
     /// Who decodes the source while it is being normalized. The goblins write
     /// the same normalized copy either way, byte for byte -- this only changes
-    /// how long the normalize stage takes. The graphics card decodes the video
-    /// and keeps each frame in its own memory, and the goblins lower the frame
-    /// rate there, so the frames they do not keep never cross to the
-    /// processor. On an 8K 60 fps VR video this is approximately 1.6 times as
-    /// quick as a decode on the processor. Any AMD, Intel or NVIDIA card can
-    /// do it: the goblins ask the operating system, not the make of the card.
-    /// If no decoder can take the video, or if the number of bits a colour
-    /// cannot be read, the goblins decode on the processor.
+    /// how long the normalize stage takes. The card removes the decode but
+    /// adds a trip across the bus, so it is quicker on a video that decodes
+    /// expensively (an 8K panorama: approximately 1.6 times as quick) and
+    /// slower on one that does not (4K H.264: approximately 3 times slower).
+    /// Because that is a property of your video, `auto` times both ways on the
+    /// video itself, which reads approximately 100 frames and adds one or two
+    /// seconds. Any AMD, Intel or NVIDIA card can do it: the goblins ask the
+    /// operating system, not the make of the card. If no decoder can take the
+    /// video, or if the number of bits a colour cannot be read, the goblins
+    /// decode on the processor.
     #[arg(long, value_enum, default_value_t = ffmpeg::HwAccel::Auto, value_name = "WHO")]
     hwaccel: ffmpeg::HwAccel,
 

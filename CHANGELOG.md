@@ -43,10 +43,20 @@ same call. There is no option here that belongs to one make of card.
 The written video is the same video, byte for byte. This was measured frame by
 frame, at 8 bits and at 10 bits, through each of the decoders.
 
+**The default now times your video and takes the quicker way.** The card is
+not always quicker. It removes the decode but adds a trip across the bus, so
+it wins when the decode costs more than the trip. An 8K panorama decodes
+expensively and the card wins by a third; an ordinary H.264 clip decodes
+almost for free, and there the card measured three times slower. This is a
+property of your video, not of its size and not of VR, so `--hwaccel auto`
+times both ways on the video itself and uses the quicker one. The test reads
+approximately 100 frames and adds one or two seconds.
+
+`--hwaccel on` takes the card wherever one will accept the video, with no
+test. `--hwaccel off` always uses the processor.
+
 If no decoder can take the video, or if the number of bits a colour cannot be
-read, GoblinScript decodes with the processor as before. `--hwaccel on` now
-also applies to flat videos; `--hwaccel auto` continues to use the card for VR
-videos only.
+read, GoblinScript decodes with the processor as before.
 
 **The goblins are the same goblins.** This release changes only how quickly a
 video is prepared, not what is written into the funscript.

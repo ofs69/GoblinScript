@@ -285,22 +285,26 @@ fn playable(container: &str, vcodec: &str, acodec: Option<&str>) -> bool {
 /// Vulkan and 31s through DXVA2, against 44s in software.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
 pub enum HwAccel {
-    /// Ask for VR sources, decode flat ones in software.
+    /// Time both on the source itself, and decode whichever way is quicker.
     Auto,
-    /// Ask for every source.
+    /// Use the card wherever one will take the source.
     On,
     /// Always decode in software.
     Off,
 }
 
 impl HwAccel {
-    /// Does a source of this kind get the graphics card offered to it?
-    pub fn wanted(self, vr: bool) -> bool {
-        match self {
-            HwAccel::Auto => vr,
-            HwAccel::On => true,
-            HwAccel::Off => false,
-        }
+    /// Is the card offered to this source at all? `Auto` says yes to every
+    /// source and lets `hw_pays` settle it on the source's own numbers, so
+    /// there is nothing here for the KIND of source to decide.
+    pub fn offered(self) -> bool {
+        !matches!(self, HwAccel::Off)
+    }
+
+    /// Does the offer still have to be earned? `On` is the override that says
+    /// no -- take the card wherever one exists, without stopping to time it.
+    pub fn must_pay(self) -> bool {
+        matches!(self, HwAccel::Auto)
     }
 }
 
@@ -361,6 +365,72 @@ fn hw_backend(src: &Path, surface: &str) -> Option<&'static (&'static str, &'sta
     i.map(|i| &HW_BACKENDS[i])
 }
 
+/// How many frames the race decodes, and again at twice this, per side.
+const RACE_FRAMES: u32 = 32;
+
+/// How much quicker the card has to be before it is worth taking. A tie goes
+/// to the processor: it is the path with nothing under it to go wrong.
+const RACE_MARGIN: f64 = 0.9;
+
+/// Does the card actually PAY for this source?
+///
+/// It is not a question resolution answers, and not one VR answers either.
+/// The card removes the decode and adds a bus trip, so it wins exactly when
+/// the decode it removes costs more than the trip it adds -- and both sides of
+/// that depend on the source. A real 8K HEVC panorama decodes so expensively
+/// that the trip is cheap by comparison and the card wins by a third. An
+/// ordinary H.264 clip decodes almost for free, and the same trip is then the
+/// whole cost: measured on 4K H.264, the card is three times SLOWER.
+///
+/// So the source is asked, not guessed at. Each side decodes `RACE_FRAMES` and
+/// then twice that, and the two are subtracted -- what is left is the marginal
+/// cost of the frames themselves, with process start-up and device set-up
+/// cancelled out of both. That subtraction is the point: those fixed costs are
+/// paid once against a normalize measured in minutes, so a race that counted
+/// them would talk the card out of sources it wins comfortably.
+///
+/// The race starts a tenth of the way in. The head of a video is the one place
+/// its frames are not typical of it -- a still cover frame decodes at any speed
+/// at all, on either side.
+fn hw_pays(src: &Path, surface: &str, backend: &(&str, &str)) -> bool {
+    let seek = duration_ms(src).map(|d| d / 10.0 / 1000.0).unwrap_or(0.0);
+    let run = |hw: bool, frames: u32| -> Option<std::time::Duration> {
+        let mut cmd = Command::new("ffmpeg");
+        cmd.args(["-v", "error", "-nostdin"]);
+        if seek > 1.0 {
+            cmd.args(["-ss", &format!("{seek:.3}")]);
+        }
+        if hw {
+            cmd.args(["-hwaccel", backend.0, "-hwaccel_output_format", backend.1]);
+        }
+        cmd.arg("-i").arg(src);
+        cmd.args(["-map", "0:v:0", "-frames:v", &frames.to_string()]);
+        if hw {
+            cmd.args(["-vf", &format!("hwdownload,format={surface}")]);
+        }
+        cmd.args(["-f", "null", "-"]);
+        let t = std::time::Instant::now();
+        let ok = cmd
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .is_ok_and(|s| s.success());
+        ok.then(|| t.elapsed())
+    };
+    // The card's leg runs first at each size. A cold file cache would otherwise
+    // land entirely on whichever side went first and decide the race by itself.
+    let marginal = |hw: bool| -> Option<f64> {
+        let short = run(hw, RACE_FRAMES)?;
+        let long = run(hw, RACE_FRAMES * 2)?;
+        Some((long.as_secs_f64() - short.as_secs_f64()).max(0.0))
+    };
+    let (Some(card), Some(cpu)) = (marginal(true), marginal(false)) else {
+        return false;
+    };
+    // A source so cheap that neither leg measures anything has nothing to win.
+    cpu > 0.0 && card < cpu * RACE_MARGIN
+}
+
 /// Normalize a source video into the encode spec the model was trained on.
 ///
 /// With a `vr` config the same pass ALSO flattens the source: `crop` the eye,
@@ -394,11 +464,18 @@ pub fn transcode(
     //
     // The card is offered only when the SOURCE's depth is readable, because
     // `hwdownload` has to be named a format and there is nothing safe to guess.
-    let hw = hw
-        .wanted(vr.is_some())
+    // Then a backend has to exist for it, and on `auto` it has to be quicker
+    // than the processor on this very source -- which is a question only the
+    // source can answer, so it is asked rather than assumed.
+    let dial = hw;
+    let hw = dial
+        .offered()
         .then(|| surface_fmt(src))
         .flatten()
-        .filter(|surface| hw_backend(src, surface).is_some());
+        .filter(|surface| match hw_backend(src, surface) {
+            Some(backend) => !dial.must_pay() || hw_pays(src, surface, backend),
+            None => false,
+        });
     match run_transcode(src, &part, spec, total_ms, vr, hw, &mut on_progress) {
         Ok(()) => {}
         Err(e) if hw.is_some() && !crate::cancel::is_cancel(&e) => {
@@ -904,13 +981,15 @@ mod tests {
         }
     }
 
-    /// The dial, spelled out: only `on` reaches a flat source, only `off`
-    /// keeps the card away from VR.
+    /// The dial, spelled out. `auto` and `on` both offer the card to every
+    /// source -- the KIND of source decides nothing here, because whether the
+    /// card pays is a property of the source's own frames. What separates them
+    /// is who has to prove it: `auto` times the source, `on` skips the timing.
     #[test]
-    fn the_decode_dial_says_who_gets_asked() {
-        assert!(!HwAccel::Auto.wanted(false) && HwAccel::Auto.wanted(true));
-        assert!(HwAccel::On.wanted(false) && HwAccel::On.wanted(true));
-        assert!(!HwAccel::Off.wanted(false) && !HwAccel::Off.wanted(true));
+    fn the_decode_dial_says_who_gets_asked_and_who_must_earn_it() {
+        assert!(HwAccel::Auto.offered() && HwAccel::Auto.must_pay());
+        assert!(HwAccel::On.offered() && !HwAccel::On.must_pay());
+        assert!(!HwAccel::Off.offered());
     }
 
     /// THE timecode case: an MP4 whose video is tied to a tmcd track by a
@@ -1196,7 +1275,9 @@ mod tests {
                 src.to_str().unwrap(),
             ]);
             let mut out = Vec::new();
-            for (name, dial) in [("card", HwAccel::On), ("cpu", HwAccel::Off)] {
+            for (name, dial) in
+                [("card", HwAccel::On), ("cpu", HwAccel::Off), ("auto", HwAccel::Auto)]
+            {
                 let norm = dir.join(format!("card_{depth}_{name}.mp4"));
                 let _ = std::fs::remove_file(&norm);
                 super::transcode(&src, &norm, &spec, 4000.0, None, dial, |_| {}).unwrap();
@@ -1205,6 +1286,11 @@ mod tests {
             assert_eq!(
                 out[0], out[1],
                 "{depth}: the card and the processor wrote different normalizes"
+            );
+            assert_eq!(
+                out[1], out[2],
+                "{depth}: `auto` wrote a third thing -- whichever way it went, \
+                 it has to land on the file the other two agree on"
             );
         }
     }
