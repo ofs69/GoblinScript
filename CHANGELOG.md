@@ -3,7 +3,7 @@
 ## 0.4.0-rc.2
 
 **A candidate, not a release.** These goblins are on disk and under test;
-the shipped build is still 0.3.4.
+the shipped build is still 0.3.5.
 
 **New goblins.** They learned on more videos than the ones before them, they
 look further along a video before they decide, and they were taught to count
@@ -23,6 +23,42 @@ the trade.
 
 **Everything else is the same.** Your settings, the review page, the languages
 and the folder picker do not change.
+
+## 0.3.5
+
+**A video that opens on a cover frame drafts again.** Some files begin with a
+single still before the film proper starts, and the goblins counted that as a
+scene change on the very first frame. That left the first scene with no frames
+in it at all, and the run stopped as `encode` began, saying `segment plan is
+not strictly ordered`. The first frame is where every video already starts, so
+it is no longer also a change; two changes closer together than a single frame
+are now one change; and a list of scene changes handed in from outside no
+longer has to arrive in order. `--no-autocrop` was the way round this and is
+not needed any more.
+
+**You can say who reads the video.** `--hwaccel auto|on|off` chooses whether
+the graphics card decodes a video while it is being normalized. The goblins
+write the same normalized copy either way -- that is now true frame for frame,
+and it was not quite true before: a run that got the card and a run that fell
+back to the processor wrote very slightly different files under the same name.
+Which side is quicker is a property of your machine rather than of your video.
+On a quick processor, asking the card measured about two and a half times
+slower here, because every frame comes back from the card at full size. Beside
+a modest processor and a strong card it can go the other way. If normalize is
+your slow stage, it is worth timing one video both ways.
+
+**Nothing is carried further than it is needed.** A video above 30 frames a
+second used to be flattened and scaled at its own rate and only then thinned
+to 30. It is thinned first now. The same frames come out; fewer are carried to
+get there.
+
+**The goblins mention when a video is not their shape.** They learned on 16:9,
+and they see every video squashed into a square, so a portrait clip reaches
+them stretched wider than it really is. Nothing later can take that back, so
+they now say so under `normalize` -- worth knowing when a draft of a tall clip
+comes back weak.
+
+Other than that same as v0.3.4.
 
 ## 0.3.4
 
