@@ -148,9 +148,13 @@ pub fn wrap180(a: f64) -> f64 {
 ///
 /// The normalize keeps a source's shape (`scale=-2:<spec>`) and the encode
 /// decode then squashes whatever that is into a square, so the further a clip
-/// sits from 16:9 the further its motion is stretched from how the corpus
-/// squashed. A portrait phone clip arrives about three times wider, relative to
-/// its height, than a 16:9 one does. Nothing downstream can take that back --
+/// sits from 16:9 the further its motion is stretched from how MOST of the
+/// corpus squashed -- 94% of it, which is a strong lean rather than a rule,
+/// and why this is a note and not a refusal. A portrait phone clip arrives
+/// about three times wider, relative to its height, than a 16:9 one does.
+/// Other shapes are in there and draft perfectly well; what the goblins have
+/// little of is practice at reading THIS one. Nothing downstream can take the
+/// stretch back --
 /// the auto-crop cuts a square out of the GRID, which is a square of the
 /// already-stretched picture -- so a weak draft on a tall clip has this to
 /// explain it, and the note is what puts it in front of the person reading.

@@ -62,10 +62,10 @@ the frame rate first. Before, it did this last. The output frames are the same.
 
 **GoblinScript tells you when a video has a different shape.**
 
-The goblins learned from 16:9 videos, and they see each video compressed into
-a square. A tall video is therefore too wide for them. The `normalize` stage
-now shows a message about this. The message can tell you why the script for a
-tall video is bad.
+Most of the videos the goblins learned from are 16:9. They see each video
+compressed into a square, so a video with a different shape reaches them
+stretched. The `normalize` stage now shows a message about this. The message
+can tell you why the script for such a video is bad.
 
 All other functions are the same as v0.3.4.
 

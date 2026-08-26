@@ -52,7 +52,7 @@
   "console.norm.headstart": "head start, {left} left to run ({rate}x realtime)",
   "console.norm.reused": "reused",
   "console.norm.done": "done at {height}p ({took}, {rate}x realtime)",
-  "console.norm.aspect": "this video is {a}:1, not the 16:9 the goblins learned on -- they see every video squashed into a square, so a taller or wider one reaches them stretched, and a weak draft here may be why",
+  "console.norm.aspect": "this video is {a}:1. Most of the videos the goblins learned from are 16:9. They see each video compressed into a square, so a different shape reaches them stretched. This can be the cause of a weak script.",
 
   "console.expo.inband": "median luma {luma} -- corpus-ordinary, untouched",
   "console.expo.gamma": "median luma {luma} is outside the corpus band -> gamma {gamma}",

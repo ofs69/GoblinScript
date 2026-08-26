@@ -52,7 +52,7 @@
   "console.norm.headstart": "已提前开始，还剩 {left}（{rate}x 实时）",
   "console.norm.reused": "复用",
   "console.norm.done": "已完成，{height}p（{took}，{rate}x 实时）",
-  "console.norm.aspect": "此视频为 {a}:1，并非哥布林学习时的 16:9 —— 他们看到的每个视频都会被压成正方形，因此更高或更宽的画面到他们那里时是被拉伸过的；草稿效果不佳可能就是这个原因",
+  "console.norm.aspect": "此视频为 {a}:1。哥布林学习过的视频大多是 16:9。他们看到的每个视频都会被压成正方形，因此不同比例的画面到他们那里时是被拉伸的。这可能是脚本效果不佳的原因。",
 
   "console.expo.inband": "中位亮度 {luma} —— 属于语料常态，未作处理",
   "console.expo.gamma": "中位亮度 {luma} 超出语料区间 -> gamma {gamma}",
