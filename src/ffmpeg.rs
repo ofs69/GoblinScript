@@ -208,6 +208,36 @@ fn playable(container: &str, vcodec: &str, acodec: Option<&str>) -> bool {
     }
 }
 
+/// Who decodes the source during normalize.
+///
+/// Whichever runs, the normalized file is the same file -- `norm_filter`'s
+/// planar pin sees to that -- so this is a speed dial and nothing else, and
+/// the cache is right to be blind to it. Which end of the dial is faster is a
+/// property of the MACHINE, not of the video: the graphics card decodes for
+/// free but hands every frame back across the bus at full size, and on a
+/// desktop CPU that trip has measured slower than simply decoding in software.
+/// On a modest CPU beside a strong card it is the other way about.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum HwAccel {
+    /// Ask for VR sources, decode flat ones in software.
+    Auto,
+    /// Ask for every source.
+    On,
+    /// Always decode in software.
+    Off,
+}
+
+impl HwAccel {
+    /// Does a source of this kind get the graphics card offered to it?
+    pub fn wanted(self, vr: bool) -> bool {
+        match self {
+            HwAccel::Auto => vr,
+            HwAccel::On => true,
+            HwAccel::Off => false,
+        }
+    }
+}
+
 /// Normalize a source video into the encode spec the model was trained on.
 ///
 /// With a `vr` config the same pass ALSO flattens the source: `crop` the eye,
@@ -226,16 +256,18 @@ pub fn transcode(
     spec: &Transcode,
     total_ms: f64,
     vr: Option<&crate::vr::Config>,
+    hw: HwAccel,
     mut on_progress: impl FnMut(f64),
 ) -> Result<()> {
     let part = dst.with_extension("part.mp4");
-    // Hardware decode is attempted only for VR, where the source is typically
-    // 6-8K HEVC and software decode is brutal -- and it is only ever an
-    // ATTEMPT. Some driver/codec pairs accept `-hwaccel auto` and then fail
-    // mid-stream, so a failure retries in software before it becomes an error
-    // (the same fallback `vr_project.py`'s renderer runs for the same reason).
-    // The flat path never asked for it and does not start.
-    let try_hw = vr.is_some();
+    // Asking is only ever an ATTEMPT. Some driver/codec pairs accept
+    // `-hwaccel auto` and then fail -- an 8K H.264 stream is past what a
+    // hardware decoder will take, where the same size in HEVC is not -- so a
+    // failure retries in software before it becomes an error (the same
+    // fallback `vr_project.py`'s renderer runs for the same reason). The
+    // planar pin in `norm_filter` is what makes that retry free: whichever
+    // decoder ends up running, the file it writes is the same file.
+    let try_hw = hw.wanted(vr.is_some());
     match run_transcode(src, &part, spec, total_ms, vr, try_hw, &mut on_progress) {
         Ok(()) => {}
         Err(e) if try_hw && !crate::cancel::is_cancel(&e) => {
@@ -251,6 +283,37 @@ pub fn transcode(
     Ok(())
 }
 
+/// The normalize chain: the planar pin, the fps gate, whatever flattening a VR
+/// source needs, then the squash to the spec height.
+///
+/// **The planar pin leads**, and it is what makes a hardware decode and a
+/// software one the same file. A hardware decoder hands its frames back
+/// semi-planar -- `nv12` for an 8-bit source, `p010le` for a 10-bit one --
+/// where the software decoder hands back `yuv420p` and `yuv420p10le`. The
+/// picture is identical either way (the luma plane checksums match), but
+/// swscale reaches a scaled frame by a different route from each, and the two
+/// routes do not agree to the last bit. So a run that got the graphics card
+/// wrote a different normalize from the same run that fell back to software --
+/// on a cache key that cannot tell them apart. Naming BOTH planar formats
+/// fixes that without costing a conversion: the filter picks whichever of them
+/// the frame is already in, so a software decode passes through untouched at
+/// either bit depth, and only the semi-planar hardware frame is turned over.
+///
+/// **Then the fps gate**, the way it leads in every other decode chain here. A
+/// 60 fps source otherwise hands every one of its frames to `v360` and the
+/// scaler and drops half of them at the tail. Both filters are per-frame and
+/// leave timestamps alone, so which side of them the gate sits on cannot
+/// change WHICH frames come out; only how many were carried to produce them.
+fn norm_filter(spec: &Transcode, vr: Option<&crate::vr::Config>) -> String {
+    let mut vf = format!("format=yuv420p|yuv420p10le,fps={}", spec.fps);
+    if let Some(v) = vr {
+        vf.push(',');
+        vf.push_str(&v.filter_prefix(spec.height));
+    }
+    vf.push_str(&format!(",scale=-2:{}:flags=bicubic", spec.height));
+    vf
+}
+
 /// One ffmpeg attempt, writing `part`. Split out so a hardware-decode failure
 /// can be retried in software without duplicating the command.
 fn run_transcode(
@@ -262,15 +325,7 @@ fn run_transcode(
     hw: bool,
     on_progress: &mut impl FnMut(f64),
 ) -> Result<()> {
-    let mut vf = String::new();
-    if let Some(v) = vr {
-        vf.push_str(&v.filter_prefix(spec.height));
-        vf.push(',');
-    }
-    vf.push_str(&format!(
-        "scale=-2:{}:flags=bicubic,fps={}",
-        spec.height, spec.fps
-    ));
+    let vf = norm_filter(spec, vr);
     let gop = (spec.fps * 2.0).round().max(1.0) as i64;
 
     let mut cmd = Command::new("ffmpeg");
@@ -559,7 +614,8 @@ impl SegmentedDecoder {
 
 #[cfg(test)]
 mod tests {
-    use super::{first_dims, playable, Decoder, SegmentedDecoder};
+    use super::{first_dims, norm_filter, playable, Decoder, HwAccel, SegmentedDecoder};
+    use crate::bundle::Transcode;
     use std::path::{Path, PathBuf};
 
     const MP4: &str = "mov,mp4,m4a,3gp,3g2,mj2";
@@ -569,6 +625,51 @@ mod tests {
     fn dims_read_the_one_video_stream() {
         let r = r#"{"streams":[{"width":1920,"height":1080}]}"#;
         assert_eq!(first_dims(r), Some((1920, 1080)));
+    }
+
+    fn spec() -> Transcode {
+        Transcode { height: 480, fps: 30.0, crf: 23, preset: "medium".to_string() }
+    }
+
+    /// The pin comes first so a hardware decode and a software one hand the
+    /// same frames to everything downstream, and the gate comes next so the
+    /// filters behind it are never handed frames that get dropped anyway.
+    #[test]
+    fn the_normalize_chain_pins_the_format_then_gates_the_rate() {
+        let f = norm_filter(&spec(), None);
+        assert_eq!(f, "format=yuv420p|yuv420p10le,fps=30,scale=-2:480:flags=bicubic");
+    }
+
+    /// Naming both planar depths is what keeps the pin free: a software decode
+    /// of either is already in one of them, so nothing is converted and the
+    /// file is the one v0.3.4 wrote.
+    #[test]
+    fn the_pin_offers_both_planar_depths() {
+        let f = norm_filter(&spec(), None);
+        let pin = f.split(',').next().unwrap();
+        assert!(pin.contains("yuv420p|") && pin.contains("yuv420p10le"), "{pin}");
+    }
+
+    /// A VR source flattens BEHIND the gate: v360 is the costliest filter in
+    /// the graph and must never run on a frame the gate is about to drop.
+    #[test]
+    fn vr_flattening_sits_behind_the_gate() {
+        let cfg = crate::vr::Config::default();
+        let f = norm_filter(&spec(), Some(&cfg));
+        let gate = f.find("fps=30").expect("gated");
+        let v360 = f.find("v360=").expect("flattened");
+        let scale = f.find("scale=-2:480").expect("scaled");
+        assert!(gate < v360 && v360 < scale, "{f}");
+        assert!(f.starts_with("format=yuv420p|yuv420p10le,fps=30,crop="), "{f}");
+    }
+
+    /// The dial, spelled out: only `on` reaches a flat source, only `off`
+    /// keeps the card away from VR.
+    #[test]
+    fn the_decode_dial_says_who_gets_asked() {
+        assert!(!HwAccel::Auto.wanted(false) && HwAccel::Auto.wanted(true));
+        assert!(HwAccel::On.wanted(false) && HwAccel::On.wanted(true));
+        assert!(!HwAccel::Off.wanted(false) && !HwAccel::Off.wanted(true));
     }
 
     /// THE timecode case: an MP4 whose video is tied to a tmcd track by a
@@ -622,6 +723,23 @@ mod tests {
             frames.push(buf.clone());
         }
         frames
+    }
+
+    /// The plan the reported clip produces, from the far side of the check
+    /// that refused it. Its cuts quantize to `[0, 89, 598, 715, 1235]` on the
+    /// 30 fps grid; carrying the frame-0 cut into the shot starts is what put
+    /// two segments on frame 0 and stopped the run at ENCODE.
+    #[test]
+    fn a_shot_plan_starting_twice_on_frame_zero_is_refused() {
+        let src = Path::new("no-such-file.mp4");
+        let good = vec![(0, None), (89, None), (598, None), (715, None), (1235, None)];
+        assert!(SegmentedDecoder::open(src, 64, 64, 30.0, None, good).is_ok());
+
+        let doubled = vec![(0, None), (0, None), (89, None), (598, None)];
+        let e = SegmentedDecoder::open(src, 64, 64, 30.0, None, doubled)
+            .err()
+            .expect("two segments on one frame must not be a plan");
+        assert!(e.to_string().contains("strictly ordered"), "{e}");
     }
 
     /// THE drift check: a multi-segment identity plan must reproduce the
@@ -857,7 +975,7 @@ mod tests {
         ] {
             let norm = dir.join(format!("{name}_norm.mp4"));
             let _ = std::fs::remove_file(&norm);
-            super::transcode(&src, &norm, &spec, 8000.0, None, |_| {}).unwrap();
+            super::transcode(&src, &norm, &spec, 8000.0, None, HwAccel::Off, |_| {}).unwrap();
             let (a, n) = (luma_series(&src), luma_series(&norm));
             assert!(a.len() > 120 && n.len() > 120, "{name}: decoded nothing to compare");
             let (shift, r) = best_shift(&a, &n, 10);

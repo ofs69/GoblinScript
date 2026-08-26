@@ -302,6 +302,17 @@ struct Cli {
     #[arg(long)]
     no_exposure: bool,
 
+    /// Who decodes the source while it is being normalized. The goblins write
+    /// the same normalized copy either way -- this only changes how long the
+    /// normalize stage takes, and which way is quicker depends on your
+    /// machine, not on your video. The graphics card decodes for free but
+    /// sends every frame back at full size, which on a quick processor has
+    /// measured SLOWER than just decoding on the processor; beside a modest
+    /// processor it is the other way about. Worth timing one video both ways
+    /// if your normalize stage is the slow part.
+    #[arg(long, value_enum, default_value_t = ffmpeg::HwAccel::Auto, value_name = "WHO")]
+    hwaccel: ffmpeg::HwAccel,
+
     /// Colour scheme for every screen the goblins draw: green phosphor, an
     /// amber monitor, CGA cyan/magenta, or plain white phosphor. The picker
     /// cycles it with T and remembers the choice.
@@ -1733,7 +1744,7 @@ fn draft(
                 100,
                 100.0 / (dur_ms / 1000.0).max(1e-9),
             );
-            ffmpeg::transcode(video, &norm, &norm_spec, dur_ms, vr_cfg, |f| {
+            ffmpeg::transcode(video, &norm, &norm_spec, dur_ms, vr_cfg, cli.hwaccel, |f| {
                 pb.set_position((f * 100.0) as u64)
             })?;
             let s = t.elapsed().as_secs_f64();
@@ -1747,6 +1758,20 @@ fn draft(
         }
         norm
     };
+
+    // A flat source whose shape is not the corpus's reaches the goblins
+    // stretched, and every stage after this one inherits that. Said once,
+    // whichever way the normalize above was satisfied -- a reused copy is
+    // still the same stretched picture. A VR source is not asked: its viewport
+    // has its own version of this complaint, on the page where it is aimed.
+    if vr_cfg.is_none() {
+        if let Some(note) = ffmpeg::dims(video)
+            .ok()
+            .and_then(|(w, h)| vr::flat_aspect_warning(w as u32, h as u32))
+        {
+            live.println(format!("  {}", style(note).fg(con(th.muted))));
+        }
+    }
 
     // 1.5 exposure -- the clip's one corrective gamma, read off the same file
     // every later stage decodes. It joins the decode chains that feed the
@@ -2788,7 +2813,7 @@ fn real_main() -> Result<()> {
         // neither, but pays a `Vec` that stays empty for the simpler code.
         let mut failures: Vec<errlog::Failure> = Vec::new();
         let mut log: Option<PathBuf> = None;
-        let pf = prefetch::Prefetch::new(!cli.no_transcode && !cli.no_prefetch);
+        let pf = prefetch::Prefetch::new(!cli.no_transcode && !cli.no_prefetch, cli.hwaccel);
         // The picker's header, pinned over the log for the length of the batch:
         // the app opened as an app, so it keeps its goblins while it works. A
         // run that named videos on a command line keeps the plain console --

@@ -143,6 +143,31 @@ pub fn wrap180(a: f64) -> f64 {
     (a + 180.0).rem_euclid(360.0) - 180.0
 }
 
+/// `Config::aspect_warning`'s twin for a FLAT source, which has no viewport to
+/// choose: its own frame IS the shape the encoder squashes.
+///
+/// The normalize keeps a source's shape (`scale=-2:<spec>`) and the encode
+/// decode then squashes whatever that is into a square, so the further a clip
+/// sits from 16:9 the further its motion is stretched from how the corpus
+/// squashed. A portrait phone clip arrives about three times wider, relative to
+/// its height, than a 16:9 one does. Nothing downstream can take that back --
+/// the auto-crop cuts a square out of the GRID, which is a square of the
+/// already-stretched picture -- so a weak draft on a tall clip has this to
+/// explain it, and the note is what puts it in front of the person reading.
+///
+/// The +-5% band is the viewport rule's: 1920x1080, 1280x720 and 854x480 all
+/// read as native, 4:3 and portrait do not.
+pub fn flat_aspect_warning(w: u32, h: u32) -> Option<String> {
+    if w == 0 || h == 0 {
+        return None;
+    }
+    let a = w as f64 / h as f64;
+    if (a / Config::NATIVE_ASPECT - 1.0).abs() <= 0.05 {
+        return None;
+    }
+    Some(crate::t!("console.norm.aspect", a = format!("{a:.2}")))
+}
+
 impl Config {
     /// `v_fov` from `h_fov` and the output aspect (rectilinear), unless pinned.
     /// The same rule `projector.js` applies before it draws, and

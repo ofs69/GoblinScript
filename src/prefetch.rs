@@ -69,11 +69,14 @@ pub struct Prefetch {
     /// to run ahead) or when nothing is in flight.
     job: Mutex<Option<(PathBuf, Job)>>,
     enabled: bool,
+    /// The run's decode dial, so a head start and the stage it stands in for
+    /// are the same pass -- and land on the same cache entry either way.
+    hw: crate::ffmpeg::HwAccel,
 }
 
 impl Prefetch {
-    pub fn new(enabled: bool) -> Self {
-        Self { job: Mutex::new(None), enabled }
+    pub fn new(enabled: bool, hw: crate::ffmpeg::HwAccel) -> Self {
+        Self { job: Mutex::new(None), enabled, hw }
     }
 
     /// Begin normalizing `video` in the background.
@@ -112,6 +115,7 @@ impl Prefetch {
 
         let (v, s, p) = (video.to_path_buf(), spec.clone(), progress.clone());
         let vr = vr.cloned();
+        let hw = self.hw;
         let handle = std::thread::spawn(move || -> Result<()> {
             let dur = crate::ffmpeg::duration_ms(&v)?;
             // the head start must measure the same timeline the main loop will
@@ -123,7 +127,7 @@ impl Prefetch {
                 }
                 None => dur,
             };
-            crate::ffmpeg::transcode(&v, &norm, &s, total, vr.as_ref(), |f| {
+            crate::ffmpeg::transcode(&v, &norm, &s, total, vr.as_ref(), hw, |f| {
                 p.store((f * SCALE) as u64, Ordering::Relaxed);
             })
         });
@@ -202,7 +206,7 @@ mod tests {
     // `norm<h>.mp4` in their own cache dir.
     #[test]
     fn a_job_is_only_claimed_by_its_own_video() {
-        let pf = Prefetch::new(true);
+        let pf = Prefetch::new(true, crate::ffmpeg::HwAccel::Off);
         pf.park(Path::new("b.mp4"), 0);
         assert!(pf.claim(Path::new("a.mp4")).is_none(), "claimed the wrong video");
         assert!(pf.claim(Path::new("b.mp4")).is_some());
@@ -214,7 +218,7 @@ mod tests {
     // not replace (and so orphan) the first.
     #[test]
     fn only_one_head_start_runs_at_a_time() {
-        let pf = Prefetch::new(true);
+        let pf = Prefetch::new(true, crate::ffmpeg::HwAccel::Off);
         pf.park(Path::new("b.mp4"), 0);
         pf.park_if_free(Path::new("c.mp4"));
         assert!(pf.claim(Path::new("c.mp4")).is_none(), "c displaced b");
@@ -226,7 +230,7 @@ mod tests {
     // while the GPU was busy must read as ~0, not as its own run time.
     #[test]
     fn waiting_on_a_finished_job_costs_nothing() {
-        let pf = Prefetch::new(true);
+        let pf = Prefetch::new(true, crate::ffmpeg::HwAccel::Off);
         pf.park(Path::new("b.mp4"), 0);
         std::thread::sleep(Duration::from_millis(120));
         let waited = pf.claim(Path::new("b.mp4")).unwrap().wait(|_| {}).unwrap();
@@ -237,7 +241,7 @@ mod tests {
     // the measurement baseline. Both must leave the batch strictly sequential.
     #[test]
     fn disabled_never_starts_anything() {
-        let pf = Prefetch::new(false);
+        let pf = Prefetch::new(false, crate::ffmpeg::HwAccel::Off);
         pf.start(Path::new("b.mp4"), Path::new("."), &Transcode {
             height: 480, fps: 30.0, crf: 23, preset: "medium".into(),
         }, None);
