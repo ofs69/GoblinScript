@@ -81,10 +81,8 @@ fn crossings(s: &[f64]) -> Vec<usize> {
 /// forbidden -- not a probability threshold. `g` is the refractory in rows;
 /// without it a fitted prior's surplus lands as adjacent peak/valley pairs no
 /// author writes (33 ms half-strokes at 30 rows/s), chopping sustained fast
-/// sections into stubs. `g` is the SPACING: consecutive events sit at least
-/// `g` rows apart, so `g - 1` rows between a pair are event-free. State =
-/// (kind of last event, rows since it, saturated at `g - 1`), so the count is
-/// `1 + 2 * g`. Exact, one pass.
+/// sections into stubs. State = (kind of last event, rows since it, saturated
+/// at `g`), so the count is `1 + 2 * (g + 1)`. Exact, one pass.
 ///
 /// The prior is PER ROW, which is what a band-fitted bias needs -- the Python
 /// broadcasts `bias[band_of]` into the same argument, so one row's prior
@@ -99,9 +97,9 @@ fn alternating_events_rows(
     if t_len == 0 {
         return (Vec::new(), Vec::new());
     }
-    let n_a = g; // ages 0..g-2, then FREE at index g-1
+    let n_a = g + 1; // ages 0..g-1, then FREE at index g
     let ns = 1 + 2 * n_a;
-    let free = n_a - 1;
+    let free = g;
     let neg = f64::NEG_INFINITY;
     let base = |k: usize| 1 + k * n_a;
 
@@ -2135,27 +2133,28 @@ mod tests {
         assert_eq!(rc, rv);
     }
 
-    /// The refractory's exact reach, pinned in BOTH languages: `g` is the
-    /// SPACING, so a strong pair `g - 1` rows apart loses one event and a
-    /// pair `g` apart keeps both. The two fixtures above do not bind on the
-    /// refractory -- their events are already 3 and 4 rows apart -- so
-    /// without this one a reach that moved on one side alone would pass
-    /// every cross-language test. Values are `common.alternating_events`'s
-    /// own, and `grid_check.py` pins the same pair on the Python side.
+    /// The refractory's exact reach, pinned in BOTH languages: `g` is `g`
+    /// event-free rows after an event, so a strong pair `g` rows apart
+    /// loses one event and a pair `g + 1` apart keeps both. The two
+    /// fixtures above do not bind on the refractory -- their events are
+    /// already 3 and 4 rows apart -- so without this one a reach that moved
+    /// on one side alone would pass every cross-language test. Values are
+    /// `common.alternating_events`'s own, and `grid_check.py` pins the same
+    /// pair on the Python side.
     #[test]
-    fn the_refractory_reach_is_the_spacing() {
+    fn the_refractory_reach_is_one_row_past_the_gap() {
         for g in [2usize, 3] {
             let mut pk = vec![1e-3f64; 8];
             pk[0] = 0.98;
             let mut vl = vec![1e-3f64; 8];
-            vl[g - 1] = 0.98;
-            let bias = vec![0.0f64; 8];
-            let (short, _) = alternating_events_rows(&pk, &vl, &bias, g);
-            assert_eq!(short.len(), 1, "g={g}: a pair {} apart must lose one", g - 1);
-            vl[g - 1] = 1e-3;
             vl[g] = 0.98;
+            let bias = vec![0.0f64; 8];
             let (at_g, _) = alternating_events_rows(&pk, &vl, &bias, g);
-            assert_eq!(at_g.len(), 2, "g={g}: a pair {g} apart must keep both");
+            assert_eq!(at_g.len(), 1, "g={g}: a pair {g} apart must lose one");
+            vl[g] = 1e-3;
+            vl[g + 1] = 0.98;
+            let (past, _) = alternating_events_rows(&pk, &vl, &bias, g);
+            assert_eq!(past.len(), 2, "g={g}: a pair {} apart must keep both", g + 1);
         }
     }
 
