@@ -79,8 +79,11 @@ test. `--hwaccel off` always uses the processor.
 If no decoder can take the video, or if the number of bits a colour cannot be
 read, GoblinScript decodes with the processor as before.
 
-**The goblins are the same goblins.** This release changes only how quickly a
-video is prepared, not what is written into the funscript.
+**The goblins are the same goblins as in v0.3.5.** They learned nothing new
+for this release. What changed is the part of the picture they are shown --
+which you can now set yourself -- and how quickly a video is prepared for
+them. A video you drafted before can get a slightly different script, because
+the rect they read it through can now sit between the squares of their grid.
 
 ## 0.3.5
 
