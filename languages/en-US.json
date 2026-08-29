@@ -73,7 +73,7 @@
 
   "console.cropedit.label": "crop page",
   "console.cropedit.hint": "drag the rect, then click the green button",
-  "console.cropedit.waiting": "the page is open in your browser. It waits for you.",
+  "console.cropedit.waiting": "the page is open in your browser. It waits for you. If you closed it, open the address again.",
   "console.cropedit.kept": "you kept the rects the goblins picked",
 
   "console.encode.loading": "loading the goblin...",

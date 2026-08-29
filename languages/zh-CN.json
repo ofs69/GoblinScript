@@ -73,7 +73,7 @@
 
   "console.cropedit.label": "裁剪页面",
   "console.cropedit.hint": "拖动方框，然后点击绿色按钮",
-  "console.cropedit.waiting": "页面已在浏览器中打开，正在等待你。",
+  "console.cropedit.waiting": "页面已在浏览器中打开，正在等待你。如果你关闭了它，请再次打开这个地址。",
   "console.cropedit.kept": "你保留了小妖精选择的方框",
 
   "console.encode.loading": "正在唤醒哥布林……",

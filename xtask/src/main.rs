@@ -178,6 +178,24 @@ const README_COMMON: &str = r#"
   and a line you have not got to yet simply comes out in English.
 
 
+[ WHAT THE GOBLINS WATCH ]----------------------------------------------
+
+  Before they start, your browser opens on the crop page. It draws, on each
+  shot of the video, the part of the picture the goblins are about to
+  watch: they see only what is inside that box, which is what lets them
+  read a small piece of a wide frame.
+
+  If the box is on the action, click the green button and they go to work.
+  If it is not, drag the box onto the action first, or drag a corner to
+  change its size. "Use for all shots" puts one box on the whole video.
+  "Let the goblins pick" puts their own box back.
+
+  What you draw is kept for that video. A new version of GoblinScript, or
+  new goblins, do not throw it away. K in the picker turns the page off for
+  a batch that runs alone; --no-crop-edit does the same from a command
+  line, and the goblins then use the box they picked.
+
+
 [ THE REVIEW BENCH ]----------------------------------------------------
 
   When the drafting is done, your browser opens on the review page: the
