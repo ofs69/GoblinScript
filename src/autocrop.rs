@@ -15,6 +15,20 @@
 //! change only at detected cuts, so cropping introduces no motion or
 //! transitions the source lacks.
 //!
+//! **A rect is CONTINUOUS -- fractions of the frame, not attention cells.**
+//! The attention is sampled on the encoder's grid, so that is where the map
+//! is read; the RECT the map decides is not confined to it. The map is
+//! refined by `SUBCELL` between cell centres before the box is taken, the
+//! votes are percentiles of continuous edges, and the size and placement that
+//! come out of them are frame fractions the decode turns into pixels. On the
+//! deploy grid one cell is 4.2% of the frame, which used to be the step of
+//! every edge, every zoom (a ladder of six between the cap and the identity
+//! snap) and every candidate the placement search could reach; the picture
+//! box was quantized the same way, so a letterbox bar was trimmed to the
+//! nearest 4.2% of the height. Sub-cell edges are real information: the
+//! attention field is smooth and its samples say where between two cells the
+//! mass sits, and a shot's rect averages hundreds of those samples.
+//!
 //! The crop is applied in the ENCODE DECODE chain (`SegmentedDecoder`), never
 //! as a transcode: a re-encode was measured to land each render path on a
 //! different clock (container start-time offsets) and charge kappa for it.
@@ -34,8 +48,18 @@ const FLOOR_Q: f64 = 75.0; // background floor subtracted from the mixed map
 const TOP_MASS_Q: f32 = 0.6; // per-row bbox: mixed-attention mass it holds
 const CONC_CELLS: usize = 10; // sharpness = mass in this many top cells
 const EDGE_Q: f64 = 10.0; // shot edge percentile over the sharper rows
-const MARGIN_CELLS: i64 = 1; // extra cells each side of the shot bbox
-const MIN_SIDE_FRAC: f64 = 0.6667; // rect side floor (zoom cap x1.5)
+const MARGIN_CELLS: f64 = 1.0; // extra cells each side of the shot bbox --
+                     // an attention CELL, converted to a frame fraction by
+                     // the grid it was read on, so the margin is the same
+                     // piece of picture it always was
+const SUBCELL: usize = 4; // sub-cell refinement of the attention map before
+                     // the per-row box is taken: the map is interpolated onto
+                     // this many samples per cell per axis, so an edge lands
+                     // on 1/(4*grid) of the frame instead of 1/grid. The
+                     // field is smooth and sampled at cell centres, so where
+                     // a bright cell sits next to a dim one the crossing is
+                     // between them, and this is what reads it
+pub(crate) const MIN_SIDE_FRAC: f64 = 0.6667; // rect side floor (zoom cap x1.5)
 const IDENT_FRAC: f64 = 0.88; // side >= this fraction of the grid -> no crop
 const MIN_SHOT_ROWS: usize = 16; // sampled rows a shot needs to vote alone
 pub(crate) const PIC_DEAD_LUMA: usize = 26; // a cell whose brightest pixel never exceeds
@@ -54,6 +78,11 @@ const SEARCH_MARGIN: f64 = 0.03; // a candidate must beat the incumbent's conf
                      // +0.033..+0.153 -- the read's
                      // errors are SMALL-margin, so the gate blocks them while
                      // passing every measured win
+const SEARCH_STEP_CELLS: f64 = 2.0; // how far a candidate placement sits from
+                     // the attention's own, in attention cells. The margins
+                     // below were tuned with moves this size, so the step
+                     // stays the distance it was measured at even though the
+                     // rect it moves is no longer quantized to it
 const SEARCH_KEEP_CONF: f64 = 0.88; // incumbent conf at which a shot is kept
                      // without searching the other candidates: no measured
                      // WINNING move ever came from an incumbent above 0.848
@@ -63,12 +92,32 @@ const SEARCH_KEEP_CONF: f64 = 0.88; // incumbent conf at which a shot is kept
                      // ever lived -- on high-conf cutty clips this is where
                      // the probe minutes go
 
-/// One crop rect in grid cells; identity is `(0, 0, grid, grid)`.
-pub type Rect = (usize, usize, usize, usize);
+/// One crop rect as FRACTIONS of the frame -- `(x, y, w, h)`, origin top
+/// left; identity is `(0.0, 0.0, 1.0, 1.0)`. Fractions and not pixels because
+/// the same rect describes every copy of the picture: the normalized file the
+/// decode crops, the original the review page streams, and the squashed
+/// square the encoder reads (grid cells rescale the frame linearly on both
+/// axes, so a fraction is a fraction in all three).
+pub type Rect = (f64, f64, f64, f64);
+
+/// The identity rect: the whole frame, which is what "no crop" is.
+pub const IDENTITY: Rect = (0.0, 0.0, 1.0, 1.0);
+
+/// A rect is the whole frame when both sides reach it -- within a rounding
+/// hair, since these are computed fractions rather than counted cells.
+fn is_whole(r: Rect) -> bool {
+    r.2 >= 1.0 - 1e-6 && r.3 >= 1.0 - 1e-6
+}
 
 pub struct Plan {
     /// (first frame, rect) per segment, consecutive equal rects merged.
     pub segs: Vec<(usize, Rect)>,
+    /// The rects the PROBE decided, before any hand correction: what the crop
+    /// page's "auto" restores, and what its readout compares a drawn rect to.
+    pub auto: Vec<(usize, Rect)>,
+    /// A human drew the rects in `segs`. A hand-aimed plan is the aim, so it
+    /// is never re-probed and never expires with a retuned recipe.
+    pub manual: bool,
     pub grid: usize,
     /// Fraction of sampled rows with > 20% of their attention outside their
     /// rect -- the escape instrument, printed with the stage.
@@ -80,13 +129,12 @@ pub struct Plan {
 
 impl Plan {
     pub fn is_identity(&self) -> bool {
-        self.segs.iter().all(|(_, r)| r.2 == self.grid && r.3 == self.grid)
+        self.segs.iter().all(|&(_, r)| is_whole(r))
     }
 
-    /// Median zoom over segments (grid / rect side), for the stage line.
+    /// Median zoom over segments (1 / rect height), for the stage line.
     pub fn median_zoom(&self) -> f64 {
-        let mut z: Vec<f64> =
-            self.segs.iter().map(|(_, r)| self.grid as f64 / r.3 as f64).collect();
+        let mut z: Vec<f64> = self.segs.iter().map(|(_, r)| 1.0 / r.3).collect();
         z.sort_by(|a, b| a.partial_cmp(b).unwrap());
         z[z.len() / 2]
     }
@@ -96,7 +144,7 @@ impl Plan {
     pub fn segments(&self, w: usize, h: usize) -> Vec<(usize, Option<String>)> {
         self.segs
             .iter()
-            .map(|&(start, rect)| (start, crop_arg(rect, self.grid, w, h)))
+            .map(|&(start, rect)| (start, crop_arg(rect, w, h)))
             .collect()
     }
 
@@ -104,18 +152,11 @@ impl Plan {
     /// are counted on (`Manifest::grid_fps`), so the times come out on the
     /// VIDEO clock the page already plays against.
     pub fn view(&self, fps: f64) -> View {
-        let g = self.grid as f64;
         View {
             segs: self
                 .segs
                 .iter()
-                .map(|&(f, (x, y, w, h))| ViewSeg {
-                    t_ms: f as f64 / fps * 1000.0,
-                    x: x as f64 / g,
-                    y: y as f64 / g,
-                    w: w as f64 / g,
-                    h: h as f64 / g,
-                })
+                .map(|&(f, (x, y, w, h))| ViewSeg { t_ms: f as f64 / fps * 1000.0, x, y, w, h })
                 .collect(),
             zoom: self.median_zoom(),
             escape_share: self.escape_share,
@@ -145,9 +186,9 @@ impl Plan {
         let s: Vec<String> = self
             .segs
             .iter()
-            .map(|(f, (x, y, w, h))| format!("{f}:{x},{y},{w},{h}"))
+            .map(|(f, (x, y, w, h))| format!("{f}:{x:.5},{y:.5},{w:.5},{h:.5}"))
             .collect();
-        format!("crop-v1[{}]", s.join(";"))
+        format!("crop-v2[{}]", s.join(";"))
     }
 }
 
@@ -177,7 +218,8 @@ pub struct View {
 /// One sampled row: which shot it fell in, its tight bbox, its sharpness.
 struct RowVote {
     shot: usize,
-    bbox: (usize, usize, usize, usize), // x0, x1, y0, y1 (exclusive)
+    /// `x0, x1, y0, y1` as FRACTIONS of the frame, read between cell centres.
+    bbox: (f64, f64, f64, f64),
     conc: f32,
     map: Vec<f32>, // mixed attention, grid*grid, sums to 1 (escape instrument)
 }
@@ -243,7 +285,10 @@ pub fn probe(
     let mut x: Vec<u8> = Vec::with_capacity((man.clip_len / 2) * 2 * res * res * 3);
     let mut slab: Vec<i8> = vec![0; group * row_bytes];
     let mut votes: Vec<RowVote> = Vec::new();
-    let mut cell_max = vec![0u8; grid * grid];
+    // the picture box is read per PIXEL line, not per cell: a bar is trimmed
+    // where it actually ends
+    let mut row_max = vec![0u8; res];
+    let mut col_max = vec![0u8; res];
 
     // uncropped reads of a taller-than-spec normalize soften to the spec
     // height first -- the same pixels the uncropped ENCODE decode will read
@@ -285,7 +330,7 @@ pub fn probe(
             crate::cancel::check()?;
             let Some(frames) = got? else { break };
             let start = starts[i];
-            accum_cell_max(&frames[0], res, grid, &mut cell_max);
+            accum_edges(&frames[0], res, &mut row_max, &mut col_max);
             let win: Vec<&[u8]> = frames.iter().map(|v| v.as_slice()).collect();
             crate::encode::encode_window(
                 enc, man, &win, man.int8_scale, row_bytes, &mut x, &mut slab,
@@ -303,7 +348,7 @@ pub fn probe(
     anyhow::ensure!(!votes.is_empty(), "the auto-crop probe sampled no rows");
 
     // per-shot rects; under-sampled shots take the clip-global rect
-    let pic = picture_box(&cell_max, grid);
+    let pic = picture_box(&row_max, &col_max, res);
     let n_shots = cut_frames.len() + 1;
     let all: Vec<&RowVote> = votes.iter().collect();
     let glob = shot_rect(&all, grid, pic);
@@ -328,7 +373,7 @@ pub fn probe(
     if let Some(head) = head {
         for s in 0..n_shots {
             let rect = rects[s];
-            if rect.2 == grid {
+            if is_whole(rect) {
                 continue; // nothing placed, nothing to place better
             }
             let mine: Vec<usize> = starts
@@ -343,7 +388,7 @@ pub fn probe(
             // score one candidate over this shot's sampled windows
             let mut score_cand = |cand: Rect| -> Result<Option<f64>> {
                 let crop =
-                    crate::exposure::join_filters(photo, crop_arg(cand, grid, vw, vh).as_deref());
+                    crate::exposure::join_filters(photo, crop_arg(cand, vw, vh).as_deref());
                 let (mut sum, mut n) = (0.0, 0usize);
                 for &st in &mine {
                     crate::cancel::check()?;
@@ -395,13 +440,7 @@ pub fn probe(
     // escape instrument over every sampled row, against its shot's rect
     let escaped = votes
         .iter()
-        .filter(|v| {
-            let (x0, y0, w, h) = rects[v.shot];
-            let inside: f32 = (y0..y0 + h)
-                .flat_map(|y| (x0..x0 + w).map(move |x| v.map[y * grid + x]))
-                .sum();
-            1.0 - inside > 0.2
-        })
+        .filter(|v| 1.0 - inside_mass(&v.map, grid, rects[v.shot]) > 0.2)
         .count();
 
     // shot starts on the frame grid, consecutive equal rects merged
@@ -415,26 +454,28 @@ pub fn probe(
     }
 
     Ok(Plan {
+        auto: segs.clone(),
         segs,
+        manual: false,
         grid,
         escape_share: escaped as f64 / votes.len() as f64,
         placed: moved,
     })
 }
 
-/// One rect in grid cells -> the decode-chain `crop` filter in pixels of a
-/// `w`x`h` picture, even-rounded for the codec. `None` for the identity rect,
-/// which is no filter at all. The one place cells become pixels, so the plan
-/// the probe searches and the plan the decode applies cannot drift apart.
-fn crop_arg(rect: Rect, grid: usize, w: usize, h: usize) -> Option<String> {
+/// One rect -> the decode-chain `crop` filter in pixels of a `w`x`h` picture,
+/// even-rounded for the codec. `None` for the identity rect, which is no
+/// filter at all. The one place fractions become pixels, so the plan the
+/// probe searches and the plan the decode applies cannot drift apart.
+fn crop_arg(rect: Rect, w: usize, h: usize) -> Option<String> {
     let (x0, y0, rw, rh) = rect;
-    if rw == grid && rh == grid {
+    if is_whole(rect) {
         return None;
     }
-    let cw = ((rw * w) as f64 / grid as f64 / 2.0).round() as usize * 2;
-    let ch = ((rh * h) as f64 / grid as f64 / 2.0).round() as usize * 2;
-    let cx = (((x0 * w) as f64 / grid as f64).round() as usize).min(w - cw);
-    let cy = (((y0 * h) as f64 / grid as f64).round() as usize).min(h - ch);
+    let cw = ((rw * w as f64 / 2.0).round() as usize * 2).clamp(2, w & !1);
+    let ch = ((rh * h as f64 / 2.0).round() as usize * 2).clamp(2, h & !1);
+    let cx = ((x0 * w as f64).round().max(0.0) as usize).min(w - cw);
+    let cy = ((y0 * h as f64).round().max(0.0) as usize).min(h - ch);
     Some(format!("crop={cw}:{ch}:{cx}:{cy}"))
 }
 
@@ -477,60 +518,91 @@ fn block_conf(head: &mut Session, man: &Manifest, rows: &[i8], n: usize) -> Resu
     Ok((cnt > 0).then(|| sum / cnt as f64))
 }
 
-/// Per-cell running maximum of the frame's brightest channel byte -- the
-/// evidence the picture box is read from. Bars stay at codec noise across
-/// every sample; any content cell clears them the first time it is lit.
-fn accum_cell_max(frame: &[u8], res: usize, grid: usize, cell_max: &mut [u8]) {
-    let block = res / grid;
+/// Per-LINE running maximum of the frame's brightest channel byte, down each
+/// axis -- the evidence the picture box is read from. Bars stay at codec
+/// noise across every sample; any content line clears them the first time it
+/// is lit. Per line rather than per cell, so a bar is measured where it ends
+/// instead of at the nearest 4.2% of the frame.
+fn accum_edges(frame: &[u8], res: usize, row_max: &mut [u8], col_max: &mut [u8]) {
     for py in 0..res {
-        let cy = (py / block).min(grid - 1);
         let row = &frame[py * res * 3..(py + 1) * res * 3];
         for px in 0..res {
             let p = &row[px * 3..px * 3 + 3];
             let v = p[0].max(p[1]).max(p[2]);
-            let c = &mut cell_max[cy * grid + (px / block).min(grid - 1)];
-            if v > *c {
-                *c = v;
+            if v > row_max[py] {
+                row_max[py] = v;
+            }
+            if v > col_max[px] {
+                col_max[px] = v;
             }
         }
     }
 }
 
-/// The PICTURE box `(x0, x1, y0, y1)` in cells, exclusive: the frame minus
-/// its dead edge rows/columns (letterbox and pillarbox bars). Dead pixels
+/// The PICTURE box `(x0, x1, y0, y1)` as fractions of the frame: the frame
+/// minus its dead edge lines (letterbox and pillarbox bars). Dead pixels
 /// carry nothing, so no rect has business covering them -- but a "picture"
 /// too small for the zoom cap's smallest rect is not one the cap can serve,
 /// and the whole frame stands in for it.
-fn picture_box(cell_max: &[u8], grid: usize) -> (i64, i64, i64, i64) {
-    let dead_row = |y: usize| (0..grid).all(|x| (cell_max[y * grid + x] as usize) <= PIC_DEAD_LUMA);
-    let dead_col = |x: usize| (0..grid).all(|y| (cell_max[y * grid + x] as usize) <= PIC_DEAD_LUMA);
-    let (mut x0, mut x1, mut y0, mut y1) = (0usize, grid, 0usize, grid);
-    while y0 < y1 && dead_row(y0) {
-        y0 += 1;
+///
+/// `res` is the square the probe decoded, so a line here is a line of the
+/// SQUASHED picture; both axes divide by the same `res` and come out as
+/// fractions of the real frame either way.
+fn picture_box(row_max: &[u8], col_max: &[u8], res: usize) -> (f64, f64, f64, f64) {
+    let live = |v: &[u8], i: usize| (v[i] as usize) > PIC_DEAD_LUMA;
+    let span = |v: &[u8]| -> (usize, usize) {
+        let (mut a, mut b) = (0usize, res);
+        while a < b && !live(v, a) {
+            a += 1;
+        }
+        while b > a && !live(v, b - 1) {
+            b -= 1;
+        }
+        (a, b)
+    };
+    let (y0, y1) = span(row_max);
+    let (x0, x1) = span(col_max);
+    let r = res as f64;
+    let (x0, x1, y0, y1) = (x0 as f64 / r, x1 as f64 / r, y0 as f64 / r, y1 as f64 / r);
+    if x1 - x0 < MIN_SIDE_FRAC || y1 - y0 < MIN_SIDE_FRAC {
+        return (0.0, 1.0, 0.0, 1.0);
     }
-    while y1 > y0 && dead_row(y1 - 1) {
-        y1 -= 1;
-    }
-    while x0 < x1 && dead_col(x0) {
-        x0 += 1;
-    }
-    while x1 > x0 && dead_col(x1 - 1) {
-        x1 -= 1;
-    }
-    let min_side = (grid as f64 * MIN_SIDE_FRAC).round() as usize;
-    if x1 - x0 < min_side || y1 - y0 < min_side {
-        return (0, grid as i64, 0, grid as i64);
-    }
-    (x0 as i64, x1 as i64, y0 as i64, y1 as i64)
+    (x0, x1, y0, y1)
 }
 
 /// Clamp a rect start so `[start, start+side)` sits inside the picture span
 /// `[p0, p1)` -- centered overhang when the side outgrows the span -- and
-/// always inside the grid.
-fn clamp_into(start: i64, side: i64, p0: i64, p1: i64, grid: i64) -> i64 {
+/// always inside the frame.
+fn clamp_into(start: f64, side: f64, p0: f64, p1: f64) -> f64 {
     let hi = p1 - side;
-    let v = if hi < p0 { (p0 + p1 - side) / 2 } else { start.clamp(p0, hi) };
-    v.clamp(0, grid - side)
+    let v = if hi < p0 { (p0 + p1 - side) / 2.0 } else { start.clamp(p0, hi) };
+    v.clamp(0.0, (1.0 - side).max(0.0))
+}
+
+/// The attention mass of one row that falls INSIDE a rect. Cells are boxes
+/// and the rect is continuous, so an edge cell counts by the area of it the
+/// rect covers -- the same reading the crop itself makes of the picture.
+fn inside_mass(map: &[f32], grid: usize, rect: Rect) -> f64 {
+    let (x, y, w, h) = rect;
+    let g = grid as f64;
+    let overlap = |i: usize, lo: f64, hi: f64| -> f64 {
+        let (a, b) = (i as f64 / g, (i + 1) as f64 / g);
+        (b.min(hi) - a.max(lo)).max(0.0) * g
+    };
+    let mut sum = 0.0;
+    for cy in 0..grid {
+        let fy = overlap(cy, y, y + h);
+        if fy <= 0.0 {
+            continue;
+        }
+        for cx in 0..grid {
+            let fx = overlap(cx, x, x + w);
+            if fx > 0.0 {
+                sum += map[cy * grid + cx] as f64 * fx * fy;
+            }
+        }
+    }
+    sum
 }
 
 /// Candidate placements for a rect of a fixed size: where the attention put
@@ -543,17 +615,29 @@ fn clamp_into(start: i64, side: i64, p0: i64, p1: i64, grid: i64) -> i64 {
 /// just re-elect the loosest. Position has no such confound: every candidate
 /// shows the model the same amount of picture, so the comparison is like for
 /// like and the only question left is WHERE.
-fn placements(rect: Rect, grid: usize, pic: (i64, i64, i64, i64)) -> Vec<Rect> {
+fn placements(rect: Rect, grid: usize, pic: (f64, f64, f64, f64)) -> Vec<Rect> {
     let (x, y, w, h) = rect;
+    let step = SEARCH_STEP_CELLS / grid as f64;
     let mut out = vec![rect];
-    for (dx, dy) in [(-2i64, 0i64), (2, 0), (0, -2), (0, 2), (-2, -2), (2, 2)] {
-        let nx = clamp_into(x as i64 + dx, w as i64, pic.0, pic.1, grid as i64) as usize;
-        let ny = clamp_into(y as i64 + dy, h as i64, pic.2, pic.3, grid as i64) as usize;
-        if !out.contains(&(nx, ny, w, h)) {
-            out.push((nx, ny, w, h));
+    for (dx, dy) in [(-1.0, 0.0), (1.0, 0.0), (0.0, -1.0), (0.0, 1.0), (-1.0, -1.0), (1.0, 1.0)] {
+        let nx = clamp_into(x + dx * step, w, pic.0, pic.1);
+        let ny = clamp_into(y + dy * step, h, pic.2, pic.3);
+        let cand = (nx, ny, w, h);
+        if !out.iter().any(|&o: &Rect| same_rect(o, cand)) {
+            out.push(cand);
         }
     }
     out
+}
+
+/// Two rects the decode cannot tell apart (a hair under a tenth of a pixel of
+/// a 4K line). A candidate this close to one already queued is not worth the
+/// encodes it would cost to rank.
+fn same_rect(a: Rect, b: Rect) -> bool {
+    (a.0 - b.0).abs() < 1e-5
+        && (a.1 - b.1).abs() < 1e-5
+        && (a.2 - b.2).abs() < 1e-5
+        && (a.3 - b.3).abs() < 1e-5
 }
 
 /// One latent row through the mask net -> its attention vote.
@@ -609,27 +693,86 @@ fn row_vote(mask: &mut Session, man: &Manifest, row: &[i8], shot: usize) -> Resu
         *m /= kept + 1e-9;
     }
 
-    // tight bbox: smallest descending-value cell set holding TOP_MASS_Q
-    let mut order: Vec<usize> = (0..cells).collect();
-    order.sort_by(|&a, &b| map[b].partial_cmp(&map[a]).unwrap());
-    let (mut x0, mut x1, mut y0, mut y1) = (grid, 0usize, grid, 0usize);
-    let mut mass = 0f32;
-    let mut conc = 0f32;
-    for (i, &c) in order.iter().enumerate() {
-        if i < CONC_CELLS {
-            conc += map[c];
-        }
-        if mass >= TOP_MASS_Q {
-            continue;
-        }
-        mass += map[c];
-        let (cx, cy) = (c % grid, c / grid);
-        x0 = x0.min(cx);
-        x1 = x1.max(cx + 1);
-        y0 = y0.min(cy);
-        y1 = y1.max(cy + 1);
+    // the row's sharpness, read on the cells the attention was sampled on --
+    // its weight in the head mix and its vote weight in the shot
+    top.copy_from_slice(&map);
+    top.sort_by(|a, b| b.partial_cmp(a).unwrap());
+    let conc: f32 = top[..CONC_CELLS.min(cells)].iter().sum();
+
+    Ok(Some(RowVote { shot, bbox: top_mass_box(&map, grid), conc, map }))
+}
+
+/// The row's box as FRACTIONS of the frame: the smallest descending-value set
+/// of the REFINED map holding `TOP_MASS_Q` of the mass.
+///
+/// The refinement is what takes the box off the cell lattice. The set itself
+/// is the same definition it always was -- values in descending order until
+/// the mass is held -- but it is taken on a map interpolated `SUBCELL` times
+/// finer, so the edge lands where the field crosses the threshold rather than
+/// on whichever cell centre was nearest.
+fn top_mass_box(map: &[f32], grid: usize) -> (f64, f64, f64, f64) {
+    let sub = grid * SUBCELL;
+    let fine = refine(map, grid);
+    let mut srt = fine.clone();
+    srt.sort_by(|a, b| b.partial_cmp(a).unwrap());
+    if srt[0] <= 0.0 {
+        return (0.0, 1.0, 0.0, 1.0); // no mass anywhere: no opinion
     }
-    Ok(Some(RowVote { shot, bbox: (x0, x1, y0, y1), conc, map }))
+    let mut mass = 0f32;
+    let mut thr = srt[srt.len() - 1];
+    for &v in &srt {
+        mass += v;
+        if mass >= TOP_MASS_Q {
+            thr = v;
+            break;
+        }
+    }
+    let (mut x0, mut x1, mut y0, mut y1) = (sub, 0usize, sub, 0usize);
+    for (i, &v) in fine.iter().enumerate() {
+        if v >= thr {
+            let (cx, cy) = (i % sub, i / sub);
+            x0 = x0.min(cx);
+            x1 = x1.max(cx + 1);
+            y0 = y0.min(cy);
+            y1 = y1.max(cy + 1);
+        }
+    }
+    let s = sub as f64;
+    (x0 as f64 / s, x1 as f64 / s, y0 as f64 / s, y1 as f64 / s)
+}
+
+/// Bilinear refinement of the attention map: `SUBCELL` samples per cell per
+/// axis, taken between CELL CENTRES and held flat outside the outermost ones,
+/// renormalized to sum 1. `autocrop.py`'s twin -- one interpolation, or the
+/// two languages read different edges off the same attention.
+fn refine(map: &[f32], grid: usize) -> Vec<f32> {
+    let sub = grid * SUBCELL;
+    // for each fine index: the two cell centres it sits between, and how far
+    let axis: Vec<(usize, usize, f32)> = (0..sub)
+        .map(|j| {
+            let f = ((j as f64 + 0.5) / SUBCELL as f64 - 0.5).clamp(0.0, (grid - 1) as f64);
+            let i0 = f.floor() as usize;
+            let i1 = (i0 + 1).min(grid - 1);
+            (i0, i1, (f - i0 as f64) as f32)
+        })
+        .collect();
+    let mut out = vec![0f32; sub * sub];
+    let mut total = 0f32;
+    for (jy, &(y0, y1, ty)) in axis.iter().enumerate() {
+        for (jx, &(x0, x1, tx)) in axis.iter().enumerate() {
+            let a = map[y0 * grid + x0] * (1.0 - tx) + map[y0 * grid + x1] * tx;
+            let b = map[y1 * grid + x0] * (1.0 - tx) + map[y1 * grid + x1] * tx;
+            let v = a * (1.0 - ty) + b * ty;
+            out[jy * sub + jx] = v;
+            total += v;
+        }
+    }
+    if total > 0.0 {
+        for v in out.iter_mut() {
+            *v /= total;
+        }
+    }
+    out
 }
 
 /// Rows of one shot (or the whole clip) -> its rect: edges voted at EDGE_Q
@@ -638,43 +781,44 @@ fn row_vote(mask: &mut Session, man: &Manifest, row: &[i8], shot: usize) -> Resu
 /// diffuse vote from reaching the identity snap through the bars), a margin,
 /// the zoom cap, and an identity snap when what is left is most of the frame
 /// anyway.
-fn shot_rect(votes: &[&RowVote], grid: usize, pic: (i64, i64, i64, i64)) -> Rect {
-    let (x0, x1, y0, y1) = vote_edges(votes);
+fn shot_rect(votes: &[&RowVote], grid: usize, pic: (f64, f64, f64, f64)) -> Rect {
+    let (x0, x1, y0, y1) = vote_edges(votes, grid);
     let (x0, x1) = (x0.max(pic.0), x1.min(pic.1));
     let (y0, y1) = (y0.max(pic.2), y1.min(pic.3));
-    let g = grid as i64;
-    let side = (x1 - x0)
-        .max(y1 - y0)
-        .max((grid as f64 * MIN_SIDE_FRAC).round() as i64);
-    if side as f64 >= grid as f64 * IDENT_FRAC {
-        return (0, 0, grid, grid);
+    // one side for both axes: a fraction of the width equals the same
+    // fraction of the height in grid cells, which is what keeps the crop the
+    // shape of the source and the squash the encoder was trained on
+    let side = (x1 - x0).max(y1 - y0).max(MIN_SIDE_FRAC).min(1.0);
+    if side >= IDENT_FRAC {
+        return IDENTITY;
     }
-    let cx = (x0 + x1) as f64 / 2.0;
-    let cy = (y0 + y1) as f64 / 2.0;
-    let rx = clamp_into((cx - side as f64 / 2.0).round() as i64, side, pic.0, pic.1, g);
-    let ry = clamp_into((cy - side as f64 / 2.0).round() as i64, side, pic.2, pic.3, g);
-    (rx as usize, ry as usize, side as usize, side as usize)
+    let cx = (x0 + x1) / 2.0;
+    let cy = (y0 + y1) / 2.0;
+    let rx = clamp_into(cx - side / 2.0, side, pic.0, pic.1);
+    let ry = clamp_into(cy - side / 2.0, side, pic.2, pic.3);
+    (rx, ry, side, side)
 }
 
 /// The voted edges of a set of rows: the sharper half decides, at the EDGE_Q
 /// percentiles, plus the safety margin. The one definition of "where the
 /// attention is", read once and used by every rect the plan emits.
-fn vote_edges(votes: &[&RowVote]) -> (i64, i64, i64, i64) {
+fn vote_edges(votes: &[&RowVote], grid: usize) -> (f64, f64, f64, f64) {
     let mut conc: Vec<f32> = votes.iter().map(|v| v.conc).collect();
     conc.sort_by(|a, b| a.partial_cmp(b).unwrap());
     let med = conc[conc.len() / 2];
     let sharp: Vec<&&RowVote> = votes.iter().filter(|v| v.conc >= med).collect();
 
-    let col = |f: fn(&RowVote) -> usize| -> Vec<f64> {
-        let mut v: Vec<f64> = sharp.iter().map(|r| f(r) as f64).collect();
+    let col = |f: fn(&RowVote) -> f64| -> Vec<f64> {
+        let mut v: Vec<f64> = sharp.iter().map(|r| f(r)).collect();
         v.sort_by(|a, b| a.partial_cmp(b).unwrap());
         v
     };
+    let m = MARGIN_CELLS / grid as f64;
     (
-        percentile(&col(|r| r.bbox.0), EDGE_Q) as i64 - MARGIN_CELLS,
-        percentile(&col(|r| r.bbox.1), 100.0 - EDGE_Q) as i64 + MARGIN_CELLS,
-        percentile(&col(|r| r.bbox.2), EDGE_Q) as i64 - MARGIN_CELLS,
-        percentile(&col(|r| r.bbox.3), 100.0 - EDGE_Q) as i64 + MARGIN_CELLS,
+        percentile(&col(|r| r.bbox.0), EDGE_Q) - m,
+        percentile(&col(|r| r.bbox.1), 100.0 - EDGE_Q) + m,
+        percentile(&col(|r| r.bbox.2), EDGE_Q) - m,
+        percentile(&col(|r| r.bbox.3), 100.0 - EDGE_Q) + m,
     )
 }
 
@@ -735,7 +879,7 @@ fn recipe_id() -> String {
         "f{FLOOR_Q}-m{TOP_MASS_Q}-c{CONC_CELLS}-e{EDGE_Q}-g{MARGIN_CELLS}-\
          s{MIN_SIDE_FRAC}-i{IDENT_FRAC}-r{MIN_SHOT_ROWS}-p{PROBE_EVERY_S}-\
          w{SEARCH_WINDOWS}-d{PIC_DEAD_LUMA}-sm{SEARCH_MARGIN}-\
-         sk{SEARCH_KEEP_CONF}"
+         sk{SEARCH_KEEP_CONF}-u{SUBCELL}-ss{SEARCH_STEP_CELLS}"
     )
 }
 
@@ -755,20 +899,37 @@ struct PlanFile {
     gamma: f64,
     escape_share: f64,
     segs: Vec<(usize, Rect)>,
+    /// The probe's own rects, kept beside a hand correction so "auto" in the
+    /// crop page has something to restore.
+    #[serde(default)]
+    auto: Vec<(usize, Rect)>,
+    /// A human drew `segs`.
+    #[serde(default)]
+    manual: bool,
 }
 
+/// The cached plan, when it is one this run may use.
+///
+/// A PROBED plan is a pure function of (clip, bundle, recipe, exposure), so
+/// every one of those is a key and any mismatch re-probes. A HAND-AIMED one
+/// answers to none of them: the rect was drawn against the picture, and a new
+/// checkpoint or a retuned constant is no reason to throw away the one thing
+/// in the pipeline a person decided themselves. Only the grid has to match,
+/// because that is what the rects were read on.
 pub fn read_cached(dir: &Path, man: &Manifest, gamma: f64) -> Option<Plan> {
     let p: PlanFile =
         serde_json::from_slice(&std::fs::read(dir.join("autocrop.json")).ok()?).ok()?;
-    (p.checkpoint == man.checkpoint
+    let fresh = p.checkpoint == man.checkpoint
         && p.epoch == man.epoch
         && p.basis_id == man.basis_id
-        && p.grid == man.grid
         && p.recipe == recipe_id()
-        && p.gamma == gamma)
+        && p.gamma == gamma;
+    (p.grid == man.grid && (fresh || p.manual))
         .then_some(Plan {
             placed: 0,
+            auto: if p.auto.is_empty() { p.segs.clone() } else { p.auto },
             segs: p.segs,
+            manual: p.manual,
             grid: p.grid,
             escape_share: p.escape_share,
         })
@@ -785,6 +946,8 @@ pub fn write_cached(dir: &Path, man: &Manifest, plan: &Plan, gamma: f64) -> Resu
         gamma,
         escape_share: plan.escape_share,
         segs: plan.segs.clone(),
+        auto: plan.auto.clone(),
+        manual: plan.manual,
     };
     std::fs::write(dir.join("autocrop.json"), serde_json::to_vec_pretty(&f)?)
         .context("could not write the auto-crop plan")?;
@@ -793,7 +956,11 @@ pub fn write_cached(dir: &Path, man: &Manifest, plan: &Plan, gamma: f64) -> Resu
 
 /// The stage's done line: what the crop decided, and its instrument.
 pub fn stage_line(plan: &Plan, reused: bool) -> String {
-    let tag = if reused { crate::t!("console.crop.reused") } else { "" };
+    let tag = match (plan.manual, reused) {
+        (true, _) => crate::t!("console.crop.hand"),
+        (false, true) => crate::t!("console.crop.reused"),
+        _ => "",
+    };
     if plan.is_identity() {
         crate::t!("console.crop.identity", tag = tag)
     } else {
@@ -812,7 +979,6 @@ pub fn stage_line(plan: &Plan, reused: bool) -> String {
         )
     }
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -845,7 +1011,7 @@ mod tests {
         assert_eq!(shot_frames(&[1000.0, 1100.0], 30.0), vec![30, 33]);
     }
 
-    /// A `--cuts` file is under no obligation to arrive sorted, and
+    /// A cuts file is under no obligation to arrive sorted, and
     /// `partition_point` is only answerable on an ascending list.
     #[test]
     fn an_unsorted_cut_list_still_yields_an_ordered_plan() {
@@ -863,12 +1029,9 @@ mod tests {
     }
 
     fn plan_of(starts: &[usize]) -> Plan {
-        Plan {
-            segs: starts.iter().map(|&f| (f, (0, 0, 16, 16))).collect(),
-            grid: 24,
-            escape_share: 0.0,
-            placed: 0,
-        }
+        let segs: Vec<(usize, Rect)> =
+            starts.iter().map(|&f| (f, (0.0, 0.0, 0.6667, 0.6667))).collect();
+        Plan { auto: segs.clone(), segs, manual: false, grid: 24, escape_share: 0.0, placed: 0 }
     }
 
     /// A cache written before the frame-0 rule existed must not be handed
@@ -889,26 +1052,66 @@ mod tests {
         assert!(plan_of(&[0]).is_runnable());
     }
 
-    fn vote(bbox: (usize, usize, usize, usize), conc: f32) -> RowVote {
+    fn vote(bbox: (f64, f64, f64, f64), conc: f32) -> RowVote {
         RowVote { shot: 0, bbox, conc, map: Vec::new() }
+    }
+
+    /// A row whose box is stated in whole cells, which is how these fixtures
+    /// read: the recipe no longer rounds to cells, but a cell is still the
+    /// unit the attention arrives in.
+    fn cells(x0: f64, x1: f64, y0: f64, y1: f64, conc: f32) -> RowVote {
+        vote((x0 / 24.0, x1 / 24.0, y0 / 24.0, y1 / 24.0), conc)
     }
 
     fn refs(v: &[RowVote]) -> Vec<&RowVote> {
         v.iter().collect()
     }
 
-    const FULL: (i64, i64, i64, i64) = (0, 24, 0, 24);
+    const FULL: (f64, f64, f64, f64) = (0.0, 1.0, 0.0, 1.0);
+
+    fn close(a: f64, b: f64) -> bool {
+        (a - b).abs() < 1e-9
+    }
 
     #[test]
     fn tight_agreeing_rows_crop_with_margin_and_floor() {
-        // every sharp row says cells 8..14 (6 wide): margin adds one each
-        // side (8), the zoom cap lifts it to round(24 * 0.6667) = 16
-        let votes: Vec<RowVote> = (0..40).map(|_| vote((8, 14, 8, 14), 1.0)).collect();
+        // every sharp row says cells 8..14 (6 wide): the margin adds one cell
+        // each side (8 of 24 = 0.3333), and the zoom cap lifts it to 0.6667
+        let votes: Vec<RowVote> = (0..40).map(|_| cells(8.0, 14.0, 8.0, 14.0, 1.0)).collect();
         let (x0, y0, w, h) = shot_rect(&refs(&votes), 24, FULL);
-        assert_eq!((w, h), (16, 16));
-        // centered on the vote (cells 7..15 center 11), clamped in-grid
-        assert!(x0 <= 7 && x0 + w >= 15, "rect {x0}..{} misses the vote", x0 + w);
-        assert_eq!((x0, y0), (3, 3));
+        assert!(close(w, MIN_SIDE_FRAC) && close(h, MIN_SIDE_FRAC));
+        // centred on the vote (cells 7..15, centre 11 of 24), in frame
+        assert!(x0 <= 7.0 / 24.0 && x0 + w >= 15.0 / 24.0, "rect misses the vote");
+        assert!(close(x0, 11.0 / 24.0 - MIN_SIDE_FRAC / 2.0));
+        assert!(close(y0, x0));
+    }
+
+    /// The rect is no longer a whole number of cells: a vote a third of a cell
+    /// wider moves the rect by a third of a cell, where it used to move by
+    /// nothing at all until the vote crossed a whole one.
+    #[test]
+    fn a_sub_cell_vote_moves_the_rect_by_a_sub_cell_amount() {
+        let tight: Vec<RowVote> = (0..40).map(|_| cells(8.0, 14.0, 8.0, 14.0, 1.0)).collect();
+        let a = shot_rect(&refs(&tight), 24, FULL);
+        let shifted: Vec<RowVote> = (0..40)
+            .map(|_| vote((8.3 / 24.0, 14.3 / 24.0, 8.0 / 24.0, 14.0 / 24.0), 1.0))
+            .collect();
+        let b = shot_rect(&refs(&shifted), 24, FULL);
+        assert!(close(b.0 - a.0, 0.3 / 24.0), "moved {} of a cell", (b.0 - a.0) * 24.0);
+        assert!(close(b.1, a.1), "the untouched axis must not move");
+    }
+
+    /// The zoom is continuous too: between the cap and the identity snap the
+    /// old recipe could only reach six sizes (24/16 .. 24/21).
+    #[test]
+    fn the_zoom_is_not_a_ladder_of_cells() {
+        let a: Vec<RowVote> = (0..40).map(|_| cells(4.0, 20.0, 4.0, 20.0, 1.0)).collect();
+        let b: Vec<RowVote> = (0..40)
+            .map(|_| vote((4.0 / 24.0, 20.4 / 24.0, 4.0 / 24.0, 20.0 / 24.0), 1.0))
+            .collect();
+        let (za, zb) = (shot_rect(&refs(&a), 24, FULL).2, shot_rect(&refs(&b), 24, FULL).2);
+        assert!(close(za, 18.0 / 24.0), "cap-free vote of 18 cells: {za}");
+        assert!(close(zb - za, 0.4 / 24.0), "sizes {za} and {zb} are a cell apart");
     }
 
     /// The floor subtraction is what keeps a corner speck from pinning the
@@ -916,8 +1119,8 @@ mod tests {
     /// cell genuinely brighter than the background survives it.
     #[test]
     fn the_background_floor_drops_specks_not_bright_cells() {
-        let cells = 100;
-        let mut v: Vec<f64> = vec![0.001; cells]; // the uniform background
+        let n = 100;
+        let mut v: Vec<f64> = vec![0.001; n]; // the uniform background
         v[0] = 0.5; // the ROI peak
         v[99] = 0.02; // a dim speck: brighter than the floor, far from the peak
         let mut s = v.clone();
@@ -933,35 +1136,41 @@ mod tests {
 
     #[test]
     fn wide_votes_snap_to_identity() {
-        let votes: Vec<RowVote> = (0..40).map(|_| vote((1, 23, 0, 24), 1.0)).collect();
-        assert_eq!(shot_rect(&refs(&votes), 24, FULL), (0, 0, 24, 24));
+        let votes: Vec<RowVote> = (0..40).map(|_| cells(1.0, 23.0, 0.0, 24.0, 1.0)).collect();
+        assert_eq!(shot_rect(&refs(&votes), 24, FULL), IDENTITY);
     }
 
     #[test]
     fn diffuse_rows_do_not_vote() {
         // half the rows are sharp and tight, half diffuse and full-frame;
         // only the sharp half votes, so the rect stays tight
-        let mut votes: Vec<RowVote> = (0..20).map(|_| vote((9, 14, 9, 14), 0.9)).collect();
-        votes.extend((0..20).map(|_| vote((0, 24, 0, 24), 0.1)));
+        let mut votes: Vec<RowVote> = (0..20).map(|_| cells(9.0, 14.0, 9.0, 14.0, 0.9)).collect();
+        votes.extend((0..20).map(|_| cells(0.0, 24.0, 0.0, 24.0, 0.1)));
         let (_, _, w, h) = shot_rect(&refs(&votes), 24, FULL);
-        assert_eq!((w, h), (16, 16)); // the tight vote, lifted by the zoom cap
+        assert!(close(w, MIN_SIDE_FRAC) && close(h, MIN_SIDE_FRAC));
     }
 
     /// A vote near the picture's edge used to centre the cap-lifted rect
     /// onto the bars; the clamp keeps every rect cell on real pixels.
     #[test]
     fn the_rect_stays_inside_the_picture_box() {
-        let pic = (4i64, 20i64, 4i64, 20i64); // content at 2/3, centred
-        // votes hug the content's top-left corner: the 16-cell rect centred
-        // on them would start at negative cells and clamp to the frame,
-        // covering 4 columns and rows of bar
-        let votes: Vec<RowVote> = (0..40).map(|_| vote((5, 11, 5, 11), 1.0)).collect();
-        assert_eq!(shot_rect(&refs(&votes), 24, pic), (4, 4, 16, 16));
+        let pic = (0.125, 0.875, 0.125, 0.875); // content on 3/4 of the frame
+        // votes hug the content's top-left corner: the capped rect centred on
+        // them would start above the picture and used to clamp onto the bars
+        let votes: Vec<RowVote> = (0..40).map(|_| cells(5.0, 11.0, 5.0, 11.0, 1.0)).collect();
+        let r = shot_rect(&refs(&votes), 24, pic);
+        assert!(close(r.0, pic.0) && close(r.1, pic.2), "rect {r:?} is off the picture");
         // and the same clamp bounds the placement search's candidates
-        for (x, y, w, h) in placements((4, 4, 16, 16), 24, pic) {
-            assert!(x as i64 >= pic.0 && (x + w) as i64 <= pic.1);
-            assert!(y as i64 >= pic.2 && (y + h) as i64 <= pic.3);
+        for (x, y, w, h) in placements(r, 24, pic) {
+            assert!(x >= pic.0 - 1e-9 && x + w <= pic.1 + 1e-9);
+            assert!(y >= pic.2 - 1e-9 && y + h <= pic.3 + 1e-9);
         }
+        // a picture NARROWER than the zoom cap's rect has no placement that
+        // fits: the rect centres on it and overhangs both bars equally
+        let tight = (1.0 / 6.0, 5.0 / 6.0, 1.0 / 6.0, 5.0 / 6.0);
+        let r = shot_rect(&refs(&votes), 24, tight);
+        assert!(close(r.0, (tight.0 + tight.1 - r.2) / 2.0));
+        assert!(close(r.1, (tight.2 + tight.3 - r.3) / 2.0));
     }
 
     /// A diffuse vote spans the frame THROUGH the bars, which used to read
@@ -969,52 +1178,52 @@ mod tests {
     /// honest wide answer is the picture box, not the whole frame.
     #[test]
     fn a_wide_vote_crops_to_the_picture_not_identity() {
-        let pic = (4i64, 20i64, 4i64, 20i64);
-        let votes: Vec<RowVote> = (0..40).map(|_| vote((0, 24, 0, 24), 1.0)).collect();
-        assert_eq!(shot_rect(&refs(&votes), 24, pic), (4, 4, 16, 16));
+        let pic = (1.0 / 6.0, 5.0 / 6.0, 1.0 / 6.0, 5.0 / 6.0);
+        let votes: Vec<RowVote> = (0..40).map(|_| cells(0.0, 24.0, 0.0, 24.0, 1.0)).collect();
+        let r = shot_rect(&refs(&votes), 24, pic);
+        assert!(!is_whole(r), "a barred frame is not its own picture");
+        assert!(close(r.2, MIN_SIDE_FRAC));
     }
 
     #[test]
-    fn picture_box_trims_dead_edges_only() {
-        let grid = 24;
+    fn the_picture_box_trims_dead_lines_only() {
+        let res = 384;
         let lit = (PIC_DEAD_LUMA + 1) as u8;
-        // the padded layout: content cells 4..20 on both axes
-        let mut cells = vec![0u8; grid * grid];
-        for y in 4..20 {
-            for x in 4..20 {
-                cells[y * grid + x] = lit;
-            }
+        // a letterbox: 40 dead lines top and bottom, nothing at the sides
+        let mut rows = vec![lit; res];
+        for v in rows.iter_mut().take(40) {
+            *v = 0;
         }
-        assert_eq!(picture_box(&cells, grid), (4, 20, 4, 20));
-        // a dark region INSIDE the picture is content, never trimmed
-        for x in 4..20 {
-            cells[10 * grid + x] = 0;
+        for v in rows.iter_mut().skip(res - 40) {
+            *v = 0;
         }
-        assert_eq!(picture_box(&cells, grid), (4, 20, 4, 20));
-        // a barless frame is its own picture
-        let full = vec![lit; grid * grid];
-        assert_eq!(picture_box(&full, grid), (0, 24, 0, 24));
+        let cols = vec![lit; res];
+        let p = picture_box(&rows, &cols, res);
+        assert_eq!(p, (0.0, 1.0, 40.0 / 384.0, 344.0 / 384.0));
+        // one line finer than a cell of the deploy grid, which is 16 lines
+        let mut rows1 = rows.clone();
+        rows1[40] = 0;
+        assert_eq!(picture_box(&rows1, &cols, res).2, 41.0 / 384.0);
+        // a dead line INSIDE the picture is content, never trimmed
+        let mut inner = rows.clone();
+        inner[200] = 0;
+        assert_eq!(picture_box(&inner, &cols, res), p);
         // a picture the cap's smallest rect cannot fit inside is not one the
         // crop can serve: the whole frame stands in
-        let mut tiny = vec![0u8; grid * grid];
-        for y in 8..20 {
-            for x in 8..20 {
-                tiny[y * grid + x] = lit;
-            }
+        let mut tiny = vec![0u8; res];
+        for v in tiny.iter_mut().take(res / 2).skip(res / 4) {
+            *v = lit;
         }
-        assert_eq!(picture_box(&tiny, grid), (0, 24, 0, 24));
-        // and an all-dead accumulation (probe saw only black) does too
-        assert_eq!(picture_box(&vec![0u8; grid * grid], grid), (0, 24, 0, 24));
+        assert_eq!(picture_box(&tiny, &cols, res), (0.0, 1.0, 0.0, 1.0));
+        // and an all-dead accumulation (the probe saw only black) does too
+        assert_eq!(picture_box(&vec![0u8; res], &vec![0u8; res], res), (0.0, 1.0, 0.0, 1.0));
     }
 
     #[test]
     fn plan_segments_merge_and_map_to_even_pixels() {
-        let plan = Plan {
-            segs: vec![(0, (4, 4, 14, 14)), (900, (0, 0, 24, 24))],
-            grid: 24,
-            placed: 0,
-            escape_share: 0.0,
-        };
+        let segs = vec![(0, (4.0 / 24.0, 4.0 / 24.0, 14.0 / 24.0, 14.0 / 24.0)), (900, IDENTITY)];
+        let plan =
+            Plan { auto: segs.clone(), segs, manual: false, grid: 24, placed: 0, escape_share: 0.0 };
         let segs = plan.segments(854, 480);
         assert_eq!(segs.len(), 2);
         let c = segs[0].1.as_ref().expect("cropped");
@@ -1022,7 +1231,7 @@ mod tests {
         assert_eq!(c, "crop=498:280:142:80");
         assert!(segs[1].1.is_none(), "identity segment carries no filter");
         assert!(!plan.is_identity());
-        assert!(plan.key().contains("900:0,0,24,24"));
+        assert!(plan.key().contains("900:0.00000,0.00000,1.00000,1.00000"));
     }
 
     /// A cached plan carries the recipe that produced it: a plan file from
@@ -1043,25 +1252,60 @@ mod tests {
             recipe: recipe_id(),
             gamma: 1.0,
             escape_share: 0.1,
-            segs: vec![(0, (4, 4, 16, 16))],
+            segs: vec![(0, (0.1, 0.1, 0.7, 0.7))],
+            auto: vec![(0, (0.1, 0.1, 0.7, 0.7))],
+            manual: false,
         };
         let back: PlanFile =
             serde_json::from_slice(&serde_json::to_vec(&stamped).unwrap()).unwrap();
         assert_eq!(back.recipe, recipe_id());
-        // the stamp reads every recipe constant; spot-check the two that
-        // were retuned the day the gap was found
-        assert!(back.recipe.contains(&format!("f{FLOOR_Q}")));
+        // the stamp reads every recipe constant; spot-check the sub-cell
+        // refinement and the zoom cap
+        assert!(back.recipe.contains(&format!("u{SUBCELL}")));
         assert!(back.recipe.contains(&format!("s{MIN_SIDE_FRAC}")));
+    }
+
+    /// A hand-drawn plan answers to the person who drew it and not to the
+    /// recipe: a retuned constant re-probes an automatic plan and leaves a
+    /// manual one exactly where it is.
+    #[test]
+    fn a_hand_drawn_plan_outlives_the_recipe_that_never_made_it() {
+        // the fixture manifest, for the same reason `bundle.rs` uses it: a
+        // bundle is a build product a source checkout does not have
+        let man: Manifest = serde_json::from_slice(
+            &std::fs::read(
+                std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .join("tests/fixtures/manifest.json"),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let dir = std::env::temp_dir().join(format!("gs-croptest-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let segs = vec![(0usize, (0.2, 0.1, 0.5, 0.5))];
+        let plan =
+            Plan { auto: segs.clone(), segs, manual: true, grid: man.grid, escape_share: 0.0, placed: 0 };
+        write_cached(&dir, &man, &plan, 1.0).unwrap();
+        // the same run reads it back
+        let back = read_cached(&dir, &man, 1.0).expect("a manual plan is its own key");
+        assert!(back.manual && back.segs[0].1 .0 == 0.2);
+        // and so does a run whose checkpoint, epoch and exposure all moved
+        let mut other = man.clone();
+        other.checkpoint = "another".into();
+        other.epoch += 1;
+        assert!(read_cached(&dir, &other, 1.4).is_some());
+        // an automatic plan under the same move does not survive
+        let auto = Plan { manual: false, ..plan };
+        write_cached(&dir, &man, &auto, 1.0).unwrap();
+        assert!(read_cached(&dir, &other, 1.0).is_none());
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
     fn view_is_fractions_on_the_video_clock() {
-        let plan = Plan {
-            segs: vec![(0, (4, 4, 12, 12)), (900, (0, 0, 24, 24))],
-            grid: 24,
-            placed: 0,
-            escape_share: 0.05,
-        };
+        let segs = vec![(0, (4.0 / 24.0, 4.0 / 24.0, 0.5, 0.5)), (900, IDENTITY)];
+        let plan =
+            Plan { auto: segs.clone(), segs, manual: false, grid: 24, placed: 0, escape_share: 0.05 };
         let v = plan.view(30.0);
         assert_eq!(v.segs.len(), 2);
         assert_eq!(v.segs[0].t_ms, 0.0);
@@ -1072,5 +1316,64 @@ mod tests {
         assert_eq!((v.segs[1].x, v.segs[1].w), (0.0, 1.0));
         assert!((v.zoom - 2.0).abs() < 1e-12); // median_zoom's upper of x1, x2
         assert_eq!(v.escape_share, 0.05);
+    }
+
+    /// The escape instrument reads a continuous rect against square cells:
+    /// an edge cell counts by the area the rect covers of it.
+    #[test]
+    fn escaped_mass_counts_edge_cells_by_area() {
+        let grid = 4;
+        let mut map = vec![0f32; grid * grid];
+        map[5] = 0.5; // cell (1,1), fully inside the rect below
+        map[6] = 0.5; // cell (2,1), half covered by it
+        let r = (0.25, 0.25, 0.375, 0.5); // x 0.25..0.625, y 0.25..0.75
+        assert!((inside_mass(&map, grid, r) - 0.75).abs() < 1e-9);
+        assert!((inside_mass(&map, grid, IDENTITY) - 1.0).abs() < 1e-9);
+    }
+
+    /// One Gaussian blob whose centre sits BETWEEN cell centres, read through
+    /// the whole sub-cell path. `grid_check.py` pins the same numbers on the
+    /// Python side and reads the CROP_FIXTURE lines below to compare them, so
+    /// the two languages cannot refine one attention map differently.
+    fn fixture_map() -> Vec<f32> {
+        let g = 24usize;
+        let mut m = vec![0f32; g * g];
+        let mut total = 0f32;
+        for y in 0..g {
+            for x in 0..g {
+                let d = (x as f64 - 11.3).powi(2) + (y as f64 - 9.7).powi(2);
+                let v = (-d / (2.0 * 2.5f64.powi(2))).exp() as f32;
+                m[y * g + x] = v;
+                total += v;
+            }
+        }
+        for v in m.iter_mut() {
+            *v /= total;
+        }
+        m
+    }
+
+    #[test]
+    fn the_sub_cell_box_is_pinned_across_languages() {
+        let m = fixture_map();
+        let b = top_mass_box(&m, 24);
+        // CROP_FIXTURE box 0.34375000 0.63541667 0.28125000 0.57291667
+        let want = [0.34375000, 0.63541667, 0.28125000, 0.57291667];
+        for (got, want) in [b.0, b.1, b.2, b.3].iter().zip(want) {
+            assert!((got - want).abs() < 1e-6, "box {got} != {want}");
+        }
+        // an edge landing between cell centres is the whole point: 0.34375 is
+        // 8.25 cells, which the cell lattice could not have said
+        assert!((b.0 * 24.0 - 8.25).abs() < 1e-6);
+
+        let rows: Vec<RowVote> = (0..40)
+            .map(|_| RowVote { shot: 0, bbox: b, conc: 0.224346, map: m.clone() })
+            .collect();
+        let r = shot_rect(&refs(&rows), 24, FULL);
+        // CROP_FIXTURE rect 0.15623333 0.09373333 0.66670000 0.66670000
+        let want = [0.15623333, 0.09373333, 0.66670000, 0.66670000];
+        for (got, want) in [r.0, r.1, r.2, r.3].iter().zip(want) {
+            assert!((got - want).abs() < 1e-6, "rect {got} != {want}");
+        }
     }
 }

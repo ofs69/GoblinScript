@@ -3,7 +3,7 @@
 ## 0.4.0-rc.2
 
 **A candidate, not a release.** These goblins are on disk and under test;
-the shipped build is still 0.3.6.
+the released build is 0.3.5.
 
 **New goblins.** They learned on more videos than the ones before them, they
 look further along a video before they decide, and they were taught to count
@@ -25,6 +25,21 @@ the trade.
 and the folder picker do not change.
 
 ## 0.3.6
+
+**You can move the part of the picture the goblins watch.** A page opens in
+your browser before they start. It draws, on each shot, the rect they are
+about to watch. Drag the rect onto the action, drag a corner to change its
+size, and click the green button. What you draw is kept for that video: a new
+version of GoblinScript, or new goblins, do not throw it away. Click straight
+through and the goblins use what they picked, as before. `--no-crop-edit`, or
+**K** in the picker, turns the page off for a batch that runs alone.
+
+**The goblins aim that rect more exactly.** They read the picture on a grid of
+24 by 24, and the rect used to move only one whole grid square at a time --
+about 4% of the picture, with six sizes between the closest and the whole
+frame. The rect is now free of that grid: it moves and changes size by
+fractions of a square, and a black bar at the top or the bottom of a video is
+cut where it truly ends.
 
 **`--hwaccel on` is now faster than `off`, not slower.** The graphics card
 decodes the video and keeps each frame in its own memory. GoblinScript lowers

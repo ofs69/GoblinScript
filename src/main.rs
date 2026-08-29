@@ -13,6 +13,7 @@ mod bundle;
 mod cache;
 mod cancel;
 mod chrome;
+mod cropedit;
 mod dl;
 mod encode;
 mod errlog;
@@ -295,6 +296,19 @@ struct Cli {
     /// be told what it started with.
     #[arg(long)]
     no_autocrop: bool,
+
+    /// Check the crop rects in a browser before the goblins read the video.
+    /// The page draws each shot's rect on the picture and lets you drag it;
+    /// what you draw is kept for that video from then on, through a new
+    /// goblin and a new release. ON by default when you are at a terminal --
+    /// pass this only to demand it where it would otherwise be skipped, which
+    /// is a piped run with nobody to answer it.
+    #[arg(long, conflicts_with_all = ["no_autocrop", "no_crop_edit"])]
+    crop_edit: bool,
+
+    /// Take the crop the goblins picked, without showing it to you first.
+    #[arg(long)]
+    no_crop_edit: bool,
 
     /// Draft the picture as-is: skip the exposure correction (one gamma that
     /// maps a clip outside the corpus's luma band back into it; a clip
@@ -1305,6 +1319,43 @@ fn will_skip(cli: &Cli, video: &Path) -> bool {
     script_dst(cli, video).exists() && !cli.force
 }
 
+/// The crop page, on the runs that can show one.
+///
+/// It opens by default, because the crop is the one decision in the pipeline
+/// a person can make better than the goblins in a glance -- they can see what
+/// the video is of. Two runs are skipped rather than asked: a PIPED one has
+/// nobody to answer the page (`--crop-edit` demands it anyway, for driving
+/// the endpoints), and a re-run whose plan came off the cache already carries
+/// the answer the first run gave, hand-drawn or accepted.
+fn crop_page(
+    cli: &Cli,
+    live: &Live,
+    norm: &Path,
+    plan: &autocrop::Plan,
+    probed: bool,
+    dur_ms: f64,
+    man: &bundle::Manifest,
+) -> Result<Option<autocrop::Plan>> {
+    if !(cli.crop_edit || (!cli.no_crop_edit && live.tty && probed)) {
+        return Ok(None);
+    }
+    let (w, h) = ffmpeg::dims(norm)?;
+    live.setup("console.stage.cropedit", t!("console.cropedit.waiting"));
+    let edited = cropedit::edit(
+        norm,
+        plan,
+        dur_ms,
+        man.grid_fps,
+        w as f64 / h.max(1) as f64,
+        !cli.no_browser,
+        &|line| live.println(line),
+    )?;
+    if edited.is_none() {
+        live.done("console.stage.cropedit", t!("console.cropedit.kept"));
+    }
+    Ok(edited)
+}
+
 /// The ONE normalize height for a source: crop-capable
 /// (`autocrop::crop_norm_height` -- 576 at the shipped bundle), capped by
 /// the source's own lines -- a normalize never invents detail -- and never
@@ -1839,12 +1890,14 @@ fn draft(
     let mut crop_head: Option<ort::session::Session> = None;
     let plan = if want_crop && (mask.is_some() || cli.autocrop) {
         autocrop::require_mask(&mask)?;
+        let mut probed = false;
         let p = match autocrop::read_cached(&cache.dir, man, gamma) {
             Some(p) => {
                 live.done("console.stage.autocrop", &autocrop::stage_line(&p, true));
                 p
             }
             None => {
+                probed = true;
                 let t = Instant::now();
                 live.setup("console.stage.autocrop", t!("console.crop.loading"));
                 enc_sess = Some(b.encoder_session()?);
@@ -1876,6 +1929,21 @@ fn draft(
                 );
                 p
             }
+        };
+        // 2.6 the crop page (on by default at a terminal): the one stage a
+        // person is asked to judge, placed where judging it is free. Nothing
+        // downstream of the probe has run yet, so a corrected rect costs the
+        // look it took and no GPU seconds; the same correction after a draft
+        // would re-encode the whole video. It opens on the identity plan too
+        // -- "the attention wants the whole frame" is exactly the answer
+        // someone may want to overrule.
+        let p = match crop_page(&cli, &live, &norm, &p, probed, dur_ms, man)? {
+            Some(edited) => {
+                autocrop::write_cached(&cache.dir, man, &edited, gamma)?;
+                live.done("console.stage.cropedit", &autocrop::stage_line(&edited, false));
+                edited
+            }
+            None => p,
         };
         // An identity plan is the uncropped decode under a different NAME: the
         // pixels match frame for frame, but carrying it in the cache key would
@@ -2731,6 +2799,8 @@ fn real_main() -> Result<()> {
                 cli.force,
                 // auto-crop is on unless this launch or a past batch said no
                 !cli.no_autocrop && settings.autocrop,
+                // and so is the crop page it feeds
+                !cli.no_crop_edit && settings.crop_edit,
                 start_dir.clone(),
                 std::mem::take(&mut report),
                 cli.dl_dir.clone(),
@@ -2744,6 +2814,7 @@ fn real_main() -> Result<()> {
                     // bundle with no mask net it skips the crop and drafts,
                     // where the explicit flag would refuse
                     cli.no_autocrop = !p.autocrop;
+                    cli.no_crop_edit = !p.crop_edit;
                     vr_marks = p.vr;
                     start_dir = p.dir.clone();
                     // remember where videos were processed from, how the
@@ -2751,6 +2822,7 @@ fn real_main() -> Result<()> {
                     // batch was auto-cropped, for next launch
                     settings.last_dir = p.dir.as_ref().map(|d| d.display().to_string());
                     settings.autocrop = p.autocrop;
+                    settings.crop_edit = p.crop_edit;
                     settings.remember_presentation();
                     settings.save();
                     // the picker's users have no flags to re-run with -- the

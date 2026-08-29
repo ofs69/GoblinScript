@@ -49,6 +49,19 @@ pub fn check() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Test-only: the ask counter is process-global, so a test that SETS it and a
+/// test whose loop READS it cannot run at the same time -- the second would
+/// see a stop nobody asked of it. Both take this lock, and the setter puts the
+/// counter back before it lets go.
+#[cfg(test)]
+pub static TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Test-only: nobody has asked to stop.
+#[cfg(test)]
+pub fn reset() {
+    ASKS.store(0, Ordering::Relaxed);
+}
+
 /// Was this error a cancellation rather than a failure?
 pub fn is_cancel(e: &anyhow::Error) -> bool {
     e.downcast_ref::<Cancelled>().is_some()
@@ -79,10 +92,13 @@ mod tests {
     // already set the flag.
     #[test]
     fn asks_are_counted_not_just_flagged() {
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        reset();
         assert!(!requested());
         assert_eq!(request(), 1);
         assert!(requested());
         assert_eq!(request(), 2);
         assert!(check().is_err());
+        reset();
     }
 }

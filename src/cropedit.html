@@ -1,0 +1,321 @@
+<!doctype html>
+<!-- The crop page. Served from the exe (include_str!), loopback only, and
+     self-contained: the video and this page both come from 127.0.0.1.
+     It runs BEFORE the goblins read the video, so what is drawn here is what
+     they are shown. -->
+<html>
+<head>
+<meta charset="utf-8">
+<title>GoblinScript crop</title>
+<style>
+  :root {
+    --bg: #0e130c; --panel: #151d14; --panel-2: #1b241a; --edge: #4c6144;
+    --hi: #8bc34a; --hi-bright: #b6e07a; --hi-dim: #bcda90;
+    --ink: #f4f9f0; --ink-soft: #d3e2c7;
+    --danger: #ef5350;
+    --chrome: ui-monospace, "Cascadia Mono", Consolas, "DejaVu Sans Mono", monospace;
+  }
+  * { box-sizing: border-box; margin: 0; }
+  html, body { height: 100%; }
+  body { background: var(--bg); color: var(--ink); font: 14px/1.5 var(--chrome);
+         display: flex; flex-direction: column; }
+  :focus-visible { outline: 2px solid var(--hi-bright); outline-offset: 1px; }
+
+  #bar { background: var(--hi); color: #0e130c; font-weight: 700;
+         padding: 3px 10px; display: flex; justify-content: space-between; }
+  #wrap { flex: 1; display: flex; min-height: 0; }
+  #left { flex: 1; display: flex; flex-direction: column; min-width: 0; padding: 10px; gap: 8px; }
+  #side { width: 260px; border-left: 2px solid var(--edge); background: var(--panel);
+          display: flex; flex-direction: column; min-height: 0; }
+
+  /* the stage: the video, and the rect over exactly the picture inside it */
+  #stage { flex: 1; position: relative; min-height: 0; background: #000;
+           border: 2px inset var(--edge); }
+  video { width: 100%; height: 100%; object-fit: contain; display: block; }
+  #shade { position: absolute; inset: 0; pointer-events: none; }
+  #shade > div { position: absolute; background: rgba(0,0,0,.62); }
+  #rect { position: absolute; border: 2px solid var(--hi); cursor: move; }
+  #rect.hand { border-color: var(--hi-bright); border-style: solid; box-shadow: 0 0 0 1px #0e130c inset; }
+  .grip { position: absolute; width: 14px; height: 14px; background: var(--hi);
+          border: 1px solid #0e130c; }
+  .grip.nw { left: -7px; top: -7px; cursor: nwse-resize; }
+  .grip.ne { right: -7px; top: -7px; cursor: nesw-resize; }
+  .grip.sw { left: -7px; bottom: -7px; cursor: nesw-resize; }
+  .grip.se { right: -7px; bottom: -7px; cursor: nwse-resize; }
+
+  #tl { height: 30px; position: relative; background: var(--panel-2);
+        border: 2px inset var(--edge); cursor: pointer; }
+  #tl .seg { position: absolute; top: 0; bottom: 0; border-right: 1px solid var(--edge); }
+  #tl .seg.crop { background: rgba(139,195,74,.28); }
+  #tl .seg.hand { background: rgba(182,224,122,.55); }
+  #tl .seg.here { outline: 2px solid var(--hi-bright); outline-offset: -2px; }
+  #head { position: absolute; top: 0; bottom: 0; width: 2px; background: var(--ink); }
+
+  .row { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+  button { font: inherit; color: var(--ink); background: var(--panel-2);
+           border: 2px outset var(--edge); padding: 3px 9px; cursor: pointer; }
+  button:hover { background: var(--panel); color: var(--hi-bright); }
+  button.on { border-style: inset; color: var(--hi-bright); }
+  button.go { background: var(--hi); color: #0e130c; font-weight: 700; }
+  .note { color: var(--ink-soft); font-size: 12px; }
+  .warn { color: var(--danger); }
+
+  #shots { overflow-y: auto; flex: 1; }
+  .shot { padding: 4px 8px; border-bottom: 1px solid var(--edge); cursor: pointer;
+          display: flex; justify-content: space-between; gap: 6px; }
+  .shot:hover { background: var(--panel-2); }
+  .shot.here { background: var(--panel-2); color: var(--hi-bright); }
+  .shot .z { color: var(--ink-soft); }
+  .shot.hand .z { color: var(--hi-bright); }
+  #sidefoot { padding: 8px; border-top: 2px solid var(--edge); display: grid; gap: 6px; }
+</style>
+</head>
+<body>
+<div id="bar"><span data-t="cpage.title">crop</span><span id="count"></span></div>
+<div id="wrap">
+  <div id="left">
+    <div id="stage">
+      <video id="vid" src="/video" preload="metadata"></video>
+      <div id="shade">
+        <div id="sh-t"></div><div id="sh-b"></div><div id="sh-l"></div><div id="sh-r"></div>
+      </div>
+      <div id="rect">
+        <div class="grip nw" data-g="nw"></div><div class="grip ne" data-g="ne"></div>
+        <div class="grip sw" data-g="sw"></div><div class="grip se" data-g="se"></div>
+      </div>
+    </div>
+    <div id="tl"><div id="head"></div></div>
+    <div class="row">
+      <button id="play">&#9658;</button>
+      <button id="prev" data-t="cpage.prev">prev shot</button>
+      <button id="next" data-t="cpage.next">next shot</button>
+      <span class="note" id="clock">0:00</span>
+      <span class="note" id="zoom"></span>
+    </div>
+    <div class="note" id="hint" data-t="cpage.hint">Drag the rect to move it. Drag a corner to resize it. The goblins read what is inside it.</div>
+    <div class="note warn" id="shape" hidden data-t="cpage.shape">This rect is not the shape of the video. The goblins were trained on the shape of the source.</div>
+  </div>
+  <div id="side">
+    <div id="shots"></div>
+    <div id="sidefoot">
+      <div class="row">
+        <button id="lock" class="on" data-t="cpage.lock">keep shape</button>
+        <button id="auto" data-t="cpage.auto">auto</button>
+      </div>
+      <div class="row">
+        <button id="all" data-t="cpage.all">use for all shots</button>
+        <button id="autoall" data-t="cpage.autoall">auto for all</button>
+      </div>
+      <button id="done" class="go" data-t="cpage.done">draft with these rects</button>
+    </div>
+  </div>
+</div>
+<script>
+// ---- strings -------------------------------------------------------------
+let L = {};
+function T(key, args) {
+  let s = L[key];
+  if (s === undefined) return key;
+  if (args) for (const k in args) s = s.split('{' + k + '}').join(args[k]);
+  return s;
+}
+function applyLang() {
+  for (const el of document.querySelectorAll('[data-t]')) {
+    const s = L[el.dataset.t];
+    if (s !== undefined) el.textContent = s;
+  }
+}
+
+// ---- state ---------------------------------------------------------------
+// segs[i] = {t_ms, rect:[x,y,w,h], auto:[...], hand:bool}; every rect is a
+// FRACTION of the frame, which is what the plan on disk carries too.
+let segs = [], dur = 1, aspect = 16 / 9, cap = 0.6667, cur = 0, lock = true;
+const $ = id => document.getElementById(id);
+const vid = $('vid');
+
+async function load() {
+  try {
+    const r = await (await fetch('/api/lang')).json();
+    L = r.strings || {}; document.documentElement.lang = r.code || 'en-US';
+  } catch (e) { /* the markup's own English stands */ }
+  applyLang();
+  await pull();
+}
+async function pull(body) {
+  const r = body
+    ? await fetch('/api/rects', { method: 'POST', body: JSON.stringify(body) })
+    : await fetch('/api/state');
+  const s = await r.json();
+  if (!s.segs) return;
+  segs = s.segs; dur = s.dur_ms || 1; aspect = s.aspect || 16 / 9; cap = s.cap || 0.6667;
+  drawAll();
+}
+
+// ---- geometry ------------------------------------------------------------
+// Where the picture actually sits inside the video element: `object-fit:
+// contain` letterboxes it, and a rect drawn on the element instead of on the
+// PICTURE would be a rect of the wrong thing.
+function picBox() {
+  const b = vid.getBoundingClientRect();
+  const a = (vid.videoWidth || 16) / (vid.videoHeight || 9);
+  let w = b.width, h = b.width / a;
+  if (h > b.height) { h = b.height; w = b.height * a; }
+  return { x: b.left + (b.width - w) / 2, y: b.top + (b.height - h) / 2, w, h };
+}
+function segAt(ms) {
+  let i = 0;
+  for (let k = 0; k < segs.length; k++) if (segs[k].t_ms <= ms) i = k;
+  return i;
+}
+const clamp = (v, lo, hi) => Math.min(Math.max(v, lo), hi);
+function fix(r) {
+  const w = clamp(r[2], cap, 1), h = clamp(r[3], cap, 1);
+  return [clamp(r[0], 0, 1 - w), clamp(r[1], 0, 1 - h), w, h];
+}
+
+// ---- drawing -------------------------------------------------------------
+function drawAll() { drawRect(); drawShots(); drawTimeline(); }
+
+function drawRect() {
+  if (!segs.length) return;
+  const s = segs[cur], p = picBox(), st = $('stage').getBoundingClientRect();
+  const [x, y, w, h] = s.rect;
+  const L0 = p.x - st.left + x * p.w, T0 = p.y - st.top + y * p.h;
+  const W = w * p.w, H = h * p.h;
+  const el = $('rect');
+  el.style.left = L0 + 'px'; el.style.top = T0 + 'px';
+  el.style.width = W + 'px'; el.style.height = H + 'px';
+  el.classList.toggle('hand', !!s.hand);
+  $('sh-t').style.cssText = `left:0;top:0;right:0;height:${Math.max(T0, 0)}px`;
+  $('sh-b').style.cssText = `left:0;top:${T0 + H}px;right:0;bottom:0`;
+  $('sh-l').style.cssText = `left:0;top:${T0}px;width:${Math.max(L0, 0)}px;height:${H}px`;
+  $('sh-r').style.cssText = `left:${L0 + W}px;top:${T0}px;right:0;height:${H}px`;
+  $('zoom').textContent = T('cpage.zoom', { zoom: (1 / s.rect[3]).toFixed(2) });
+  // a rect of a different shape than the frame is a stretch the goblins have
+  // not seen: allowed, said out loud
+  const off = Math.abs(s.rect[2] / s.rect[3] - 1) > 0.02;
+  $('shape').hidden = !off;
+  const hands = segs.filter(s => s.hand).length;
+  $('count').textContent = T('cpage.count', { hand: hands, n: segs.length });
+}
+
+function fmt(ms) {
+  const t = Math.max(0, Math.round(ms / 1000));
+  return Math.floor(t / 60) + ':' + String(t % 60).padStart(2, '0');
+}
+
+function drawShots() {
+  const box = $('shots');
+  box.innerHTML = '';
+  segs.forEach((s, i) => {
+    const d = document.createElement('div');
+    d.className = 'shot' + (i === cur ? ' here' : '') + (s.hand ? ' hand' : '');
+    const whole = s.rect[2] >= 0.999 && s.rect[3] >= 0.999;
+    d.innerHTML = `<span>${fmt(s.t_ms)}</span><span class="z">${
+      whole ? T('cpage.whole') : 'x' + (1 / s.rect[3]).toFixed(2)}${s.hand ? ' *' : ''}</span>`;
+    d.onclick = () => { vid.currentTime = s.t_ms / 1000 + 0.05; cur = i; drawAll(); };
+    box.appendChild(d);
+  });
+  const here = box.children[cur];
+  if (here) here.scrollIntoView({ block: 'nearest' });
+}
+
+function drawTimeline() {
+  const tl = $('tl');
+  [...tl.querySelectorAll('.seg')].forEach(e => e.remove());
+  segs.forEach((s, i) => {
+    const end = i + 1 < segs.length ? segs[i + 1].t_ms : dur;
+    const d = document.createElement('div');
+    const whole = s.rect[2] >= 0.999 && s.rect[3] >= 0.999;
+    d.className = 'seg' + (whole ? '' : ' crop') + (s.hand ? ' hand' : '') + (i === cur ? ' here' : '');
+    d.style.left = (100 * s.t_ms / dur) + '%';
+    d.style.width = Math.max(100 * (end - s.t_ms) / dur, 0.2) + '%';
+    d.onclick = e => { e.stopPropagation(); vid.currentTime = s.t_ms / 1000 + 0.05; };
+    tl.appendChild(d);
+  });
+  $('head').style.left = (100 * vid.currentTime * 1000 / dur) + '%';
+}
+
+// ---- editing -------------------------------------------------------------
+let drag = null;
+$('rect').addEventListener('pointerdown', e => {
+  const g = e.target.dataset.g;
+  drag = { g, x: e.clientX, y: e.clientY, start: segs[cur].rect.slice(), p: picBox() };
+  e.target.setPointerCapture(e.pointerId);
+  e.preventDefault();
+});
+addEventListener('pointermove', e => {
+  if (!drag) return;
+  const dx = (e.clientX - drag.x) / drag.p.w, dy = (e.clientY - drag.y) / drag.p.h;
+  let [x, y, w, h] = drag.start;
+  if (!drag.g) { x += dx; y += dy; } else {
+    // a corner moves that corner; the opposite one stays put
+    const west = drag.g[1] === 'w', north = drag.g[0] === 'n';
+    let nw = west ? w - dx : w + dx, nh = north ? h - dy : h + dy;
+    if (lock) { const s = Math.max(nw, nh); nw = s; nh = s; }
+    nw = clamp(nw, cap, 1); nh = clamp(nh, cap, 1);
+    if (west) x += w - nw;
+    if (north) y += h - nh;
+    w = nw; h = nh;
+  }
+  segs[cur].rect = fix([x, y, w, h]);
+  drawRect();
+});
+addEventListener('pointerup', () => {
+  if (!drag) return;
+  drag = null;
+  post({ i: cur, rect: segs[cur].rect });
+});
+async function post(body) { await pull(body); }
+
+$('lock').onclick = () => { lock = !lock; $('lock').classList.toggle('on', lock); };
+$('auto').onclick = () => post({ i: cur, rect: null });
+$('autoall').onclick = () => post({ i: -1, rect: null });
+$('all').onclick = () => post({ i: -1, rect: segs[cur].rect });
+$('done').onclick = async () => {
+  await fetch('/api/done', { method: 'POST', body: '{}' });
+  $('done').disabled = true;
+  $('hint').textContent = T('cpage.bye');
+};
+
+// ---- transport -----------------------------------------------------------
+$('play').onclick = () => vid.paused ? vid.play() : vid.pause();
+$('prev').onclick = () => jump(-1);
+$('next').onclick = () => jump(1);
+function jump(d) {
+  const i = clamp(cur + d, 0, segs.length - 1);
+  vid.currentTime = segs[i].t_ms / 1000 + 0.05;
+  cur = i; drawAll();
+}
+$('tl').onclick = e => {
+  const b = $('tl').getBoundingClientRect();
+  vid.currentTime = dur * (e.clientX - b.left) / b.width / 1000;
+};
+vid.addEventListener('timeupdate', () => {
+  $('clock').textContent = fmt(vid.currentTime * 1000);
+  const i = segAt(vid.currentTime * 1000);
+  if (i !== cur) { cur = i; drawAll(); } else { $('head').style.left = (100 * vid.currentTime * 1000 / dur) + '%'; }
+});
+vid.addEventListener('loadedmetadata', drawAll);
+addEventListener('resize', drawRect);
+addEventListener('keydown', e => {
+  if (e.target.tagName === 'INPUT') return;
+  const step = e.shiftKey ? 0.02 : 0.005;
+  const r = segs.length ? segs[cur].rect.slice() : null;
+  switch (e.key) {
+    case ' ': e.preventDefault(); $('play').onclick(); break;
+    case 'ArrowLeft': if (e.altKey) { jump(-1); } else { r[0] -= step; nudge(r); } break;
+    case 'ArrowRight': if (e.altKey) { jump(1); } else { r[0] += step; nudge(r); } break;
+    case 'ArrowUp': r[1] -= step; nudge(r); break;
+    case 'ArrowDown': r[1] += step; nudge(r); break;
+    case '+': case '=': r[2] -= step; r[3] -= step; nudge(r); break;
+    case '-': r[2] += step; r[3] += step; nudge(r); break;
+    case 'a': $('auto').onclick(); break;
+  }
+});
+function nudge(r) { segs[cur].rect = fix(r); drawRect(); post({ i: cur, rect: segs[cur].rect }); }
+
+load();
+</script>
+</body>
+</html>

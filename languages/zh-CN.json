@@ -45,6 +45,7 @@
   "console.stage.exposure": "曝光",
   "console.stage.cuts": "镜头切分",
   "console.stage.autocrop": "自动裁剪",
+  "console.stage.cropedit": "裁剪确认",
   "console.stage.encode": "编码",
 
   "console.norm.notranscode": "已跳过（--no-transcode）",
@@ -68,6 +69,12 @@
   "console.crop.replaced": "，重新放置 {n} 个",
   "console.crop.rects": "{n} 个矩形{placed}，中位放大 x{zoom}，逸出 {esc}%{tag}",
   "console.crop.timed": "{what}（{took}）",
+  "console.crop.hand": "（你画的）",
+
+  "console.cropedit.label": "裁剪页面",
+  "console.cropedit.hint": "拖动方框，然后点击绿色按钮",
+  "console.cropedit.waiting": "页面已在浏览器中打开，正在等待你。",
+  "console.cropedit.kept": "你保留了小妖精选择的方框",
 
   "console.encode.loading": "正在唤醒哥布林……",
   "console.encode.reused": "复用潜变量（{took}，{rate}x 实时）",
@@ -117,6 +124,7 @@
   "picker.errors.act.close": "返回选择器",
 
   "picker.toggle.overwrite": "覆盖已有脚本",
+  "picker.toggle.cropedit": "裁剪确认",
   "picker.toggle.autocrop": "自动裁剪",
 
   "picker.chrome.theme": " 配色：",
@@ -139,6 +147,7 @@
   "picker.act.select": "选择",
   "picker.act.all": "全选",
   "picker.act.markvr": "标记 VR",
+  "picker.act.cropedit": "裁剪确认",
   "picker.act.autocrop": "自动裁剪",
   "picker.act.pastelink": "粘贴链接",
   "picker.act.filter": "筛选",
@@ -205,6 +214,21 @@
   "page.conf.unknown": "置信度 –",
   "page.crop.whole": "整帧",
   "page.crop.reading": "×{zoom} · {total} 个镜头中的 {n} 个 · 逸出 {esc}%",
+
+  "cpage.title": "裁剪",
+  "cpage.count": "{n} 个镜头中的 {hand} 个由你绘制",
+  "cpage.prev": "上一个镜头",
+  "cpage.next": "下一个镜头",
+  "cpage.zoom": "放大 ×{zoom}",
+  "cpage.whole": "整个画面",
+  "cpage.hint": "拖动方框可移动它。拖动角可改变它的大小。小妖精只看方框里面的画面。",
+  "cpage.shape": "这个方框与视频的形状不同。小妖精是按素材的形状学习的，形状不同会让脚本变差。",
+  "cpage.lock": "保持形状",
+  "cpage.auto": "让小妖精来选",
+  "cpage.all": "所有镜头都用这个方框",
+  "cpage.autoall": "所有镜头都让小妖精来选",
+  "cpage.done": "用这些方框生成脚本",
+  "cpage.bye": "请回到终端。小妖精现在开始工作。",
   "page.composedonly": " —— 仅限合成风格",
   "page.keys": "快捷键",
   "page.key.frame": "逐帧",
@@ -427,5 +451,5 @@
   "vr.st.undone": "已撤销",
 
   "page.help.cropShow.title": "裁剪",
-  "page.help.cropShow.body": "这份初稿经过裁剪：哥布林看到的不是整帧，而是每个镜头一个矩形，取自他们注意力实际所在的位置。（这是默认行为；--no-autocrop 或选择器中的 C 会对整帧生成 —— 而注意力覆盖整帧的片段本来就不会被裁剪，这也是这个读数并非总是出现的原因。）叠加层会在画面上画出该矩形并把其余部分调暗，让你看到他们在看什么；C 可以切换显示。\n\n旁边的读数：裁剪带来的放大倍数、有多少镜头被裁剪，以及逸出 —— 采样时刻中注意力跑到自身矩形之外的比例，这个数字说明裁剪是否过紧。\n\n被裁剪的镜头也会绘制为时间轴上的绿色条带，每个镜头一段。"
+  "page.help.cropShow.body": "这份初稿经过裁剪：哥布林看到的不是整帧，而是每个镜头一个矩形，取自他们注意力实际所在的位置。（这是默认行为；--no-autocrop 或选择器中的 C 会对整帧生成 —— 而注意力覆盖整帧的片段本来就不会被裁剪，这也是这个读数并非总是出现的原因。）叠加层会在画面上画出该矩形并把其余部分调暗，让你看到他们在看什么；C 可以切换显示。\n\n旁边的读数：裁剪带来的放大倍数、有多少镜头被裁剪，以及逸出 —— 采样时刻中注意力跑到自身矩形之外的比例，这个数字说明裁剪是否过紧。\n\n被裁剪的镜头也会绘制为时间轴上的绿色条带，每个镜头一段。\n\n方框也可以是你画的：生成脚本之前打开的裁剪页面让你把它拖到动作上，这个图层显示的就是你画的方框。"
 }

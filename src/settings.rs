@@ -49,6 +49,13 @@ pub struct Settings {
     /// costs a probe and nothing else. The choice sticks when a batch is
     /// started with it. A named-video run reads the flags only.
     pub autocrop: bool,
+    /// The crop check on (K in the picker): show each video's crop rects in
+    /// the browser before the goblins read it, so a rect that is wrong can be
+    /// dragged onto the action. ON by default -- the crop is the one decision
+    /// a person makes better than the goblins in a glance, and it is free to
+    /// make here. Switched off, a batch runs start to finish with nobody at
+    /// the keyboard.
+    pub crop_edit: bool,
 }
 
 impl Default for Settings {
@@ -62,6 +69,7 @@ impl Default for Settings {
             music: true,
             volume: None,
             autocrop: true,
+            crop_edit: true,
         }
     }
 }

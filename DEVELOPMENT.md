@@ -202,6 +202,39 @@ positive costs one glance at a page with a "not VR" button (**K**); a miss
 costs a full-length draft of nonsense. `--vr` forces the page, `--no-vr` skips
 the stage, `--vr-only` runs it without loading the model (aiming needs no GPU).
 
+### The crop (`autocrop.rs`) and its page (`cropedit.rs`, `cropedit.html`)
+
+A sparse probe runs the bundle's own mask net over short native-rate windows,
+mixes the attention heads by their concentration, and reduces what is left to
+one rect per shot. The rect rides the ENCODE decode chain (`SegmentedDecoder`),
+never a re-encode: a re-encode was measured to land each render path on a
+different clock, and the synthesized frame grid cannot drift.
+
+**A rect is fractions of the frame, not attention cells.** The map is sampled
+on the encoder's 24x24 grid and read there, but `SUBCELL`-fold bilinear
+refinement between cell centres puts each row's box at 1/96 of the frame, the
+edge votes are continuous percentiles, and the size, the placement search's
+candidates and the picture box (letterbox bars, read per pixel LINE) all follow.
+A cell is 4.2% of the frame; that used to be the step of every edge and the rung
+of a six-value zoom ladder. `autocrop.py` in the training tree is the twin, and
+`grid_check.py` binds them BOTH ways -- the constants by name, and a Gaussian
+fixture through the whole refinement (`CROP_FIXTURE` in this file's tests).
+
+**The page opens by default** (`--no-crop-edit`, or **K** in the picker, to
+skip it; `--crop-edit` demands it where it would be skipped). It is served on
+the `review.rs` pattern -- loopback, embedded, streaming the normalized copy the
+crop is applied to -- and it sits between the probe and the encode, where a
+correction is free: nothing downstream has run yet. The person drags a rect;
+what they draw replaces the vote for that shot, or for every shot.
+
+A hand-drawn plan is written back to `autocrop.json` marked `manual`, and
+`autocrop::read_cached` then keeps it through a new checkpoint, a retuned recipe
+and a different exposure -- an aim made against the picture answers to none of
+them. That is also why the page is skipped when the plan came off the cache: the
+answer it would ask for is already on disk. The rects ride the latent cache key
+(`Plan::key`), so re-drawing one re-encodes rather than reusing the old pixels,
+and the review page draws the plan it was drafted with either way.
+
 ## Presentation
 
 Four surfaces (intro demo, picker, processing console, review page) draw from

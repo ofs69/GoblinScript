@@ -45,6 +45,7 @@
   "console.stage.exposure": "exposure",
   "console.stage.cuts": "shot cuts",
   "console.stage.autocrop": "auto-crop",
+  "console.stage.cropedit": "crop check",
   "console.stage.encode": "encode",
 
   "console.norm.notranscode": "skipped (--no-transcode)",
@@ -68,6 +69,12 @@
   "console.crop.replaced": ", {n} re-placed",
   "console.crop.rects": "{n} rects{placed}, median x{zoom}, esc {esc}%{tag}",
   "console.crop.timed": "{what} ({took})",
+  "console.crop.hand": " (you drew this)",
+
+  "console.cropedit.label": "crop page",
+  "console.cropedit.hint": "drag the rect, then click the green button",
+  "console.cropedit.waiting": "the page is open in your browser. It waits for you.",
+  "console.cropedit.kept": "you kept the rects the goblins picked",
 
   "console.encode.loading": "loading the goblin...",
   "console.encode.reused": "reused latents ({took}, {rate}x realtime)",
@@ -117,6 +124,7 @@
   "picker.errors.act.close": "back to the picker",
 
   "picker.toggle.overwrite": "overwrite existing",
+  "picker.toggle.cropedit": "crop check",
   "picker.toggle.autocrop": "auto-crop",
 
   "picker.chrome.theme": " theme: ",
@@ -139,6 +147,7 @@
   "picker.act.select": "select",
   "picker.act.all": "all",
   "picker.act.markvr": "mark VR",
+  "picker.act.cropedit": "crop check",
   "picker.act.autocrop": "auto-crop",
   "picker.act.pastelink": "paste link",
   "picker.act.filter": "filter",
@@ -205,6 +214,21 @@
   "page.conf.unknown": "confidence –",
   "page.crop.whole": "whole frame",
   "page.crop.reading": "×{zoom} · {n} of {total} shots · esc {esc}%",
+
+  "cpage.title": "crop",
+  "cpage.count": "{hand} of {n} shots drawn by you",
+  "cpage.prev": "shot before",
+  "cpage.next": "shot after",
+  "cpage.zoom": "zoom ×{zoom}",
+  "cpage.whole": "whole frame",
+  "cpage.hint": "Drag the rect to move it. Drag a corner to make it larger or smaller. The goblins see only what is inside the rect.",
+  "cpage.shape": "This rect is not the shape of the video. The goblins learned on the shape of the source, so a different shape can make the script weaker.",
+  "cpage.lock": "keep shape",
+  "cpage.auto": "let the goblins pick",
+  "cpage.all": "use this rect for all shots",
+  "cpage.autoall": "let the goblins pick for all shots",
+  "cpage.done": "draft with these rects",
+  "cpage.bye": "Go back to the terminal. The goblins start now.",
   "page.composedonly": " — composed style only",
   "page.keys": "keys",
   "page.key.frame": "frame",
@@ -379,5 +403,5 @@
   "vr.st.undone": "undone",
 
   "page.help.cropShow.title": "crop",
-  "page.help.cropShow.body": "This draft was cropped: instead of the whole frame, the goblins were shown one rect per shot, picked from where their attention actually sits. (It happens by default; --no-autocrop, or the picker's C, drafts the whole frame — and a clip whose attention wants the whole frame is left alone anyway, which is why this readout is not always here.) The overlay draws that rect on the frame and dims the rest, so you can see what they were looking at; C toggles it.\n\nThe reading next to it: the zoom the crop gained, how many shots were cropped, and esc — the share of sampled moments whose attention wandered outside its own rect, which is the number that says a crop was too tight.\n\nCropped shots also draw as the green band on the timeline, one span per shot."
+  "page.help.cropShow.body": "This draft was cropped: instead of the whole frame, the goblins were shown one rect per shot, picked from where their attention actually sits. (It happens by default; --no-autocrop, or the picker's C, drafts the whole frame — and a clip whose attention wants the whole frame is left alone anyway, which is why this readout is not always here.) The overlay draws that rect on the frame and dims the rest, so you can see what they were looking at; C toggles it.\n\nThe reading next to it: the zoom the crop gained, how many shots were cropped, and esc — the share of sampled moments whose attention wandered outside its own rect, which is the number that says a crop was too tight.\n\nCropped shots also draw as the green band on the timeline, one span per shot.\n\nThe rect can also be yours: the crop page that opens before a draft lets you drag it onto the action, and what you drew there is what this overlay shows."
 }

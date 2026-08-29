@@ -29,6 +29,9 @@ pub struct Pick {
     pub force: bool,
     /// Auto-crop the batch (C in the picker) -- `--autocrop`'s toggle twin.
     pub autocrop: bool,
+    /// Show the crop page before each video (K in the picker) --
+    /// `--crop-edit`'s toggle twin. Off is what a batch left running wants.
+    pub crop_edit: bool,
     /// Where the browser was when the user hit start, so the next pick reopens
     /// there instead of jumping back to the launch directory.
     pub dir: Option<PathBuf>,
@@ -163,6 +166,9 @@ struct App {
     /// Auto-crop for the next batch (C). Seeded from the remembered setting;
     /// the choice sticks when a batch starts with it.
     autocrop: bool,
+    /// The crop page before each video of the next batch (K), on the same
+    /// terms. Off is what a batch left running unattended wants.
+    crop_edit: bool,
     /// Feedback from the batch that just ran (drafted/skipped/failed) -- shown
     /// so an instant, all-skipped start is not silent.
     status: Option<String>,
@@ -225,6 +231,7 @@ impl App {
     fn new(
         force: bool,
         autocrop: bool,
+        crop_edit: bool,
         start: Option<PathBuf>,
         report: Report,
         dl_dir: Option<PathBuf>,
@@ -240,6 +247,7 @@ impl App {
             selected: BTreeSet::new(),
             force,
             autocrop,
+            crop_edit,
             status: report.status,
             errors: !report.failures.is_empty(),
             err_off: 0,
@@ -1446,7 +1454,7 @@ mod screen_tests {
             for (w, h) in sizes {
                 let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
                 let mut app =
-                    App::new(false, false, None, Report::default(), None, Vec::new());
+                    App::new(false, false, false, None, Report::default(), None, Vec::new());
                 term.draw(|f| draw(f, &mut app)).unwrap();
                 // and again mid-filter, which adds the blinking cursor span
                 app.filtering = true;
@@ -1478,7 +1486,7 @@ mod screen_tests {
             }],
             log: Some(PathBuf::from("C:/goblins/goblinscript.log")),
         };
-        let mut app = App::new(false, false, None, report, None, Vec::new());
+        let mut app = App::new(false, false, false, None, report, None, Vec::new());
         assert!(app.errors, "a batch that failed has to say so without being asked");
 
         for (w, h) in [(1u16, 1u16), (20, 6), (80, 24), (200, 60)] {
@@ -1539,6 +1547,7 @@ mod screen_tests {
             })
             .collect();
         let mut app = App::new(
+            false,
             false,
             false,
             None,
@@ -1613,7 +1622,7 @@ C:/videos/a/very/deeply/nested/folder/with/an/extremely-long-file-name-indeed.mp
             ],
             log: Some(PathBuf::from("C:/Program Files/goblinscript/goblinscript.log")),
         };
-        let mut app = App::new(false, false, None, report, None, Vec::new());
+        let mut app = App::new(false, false, false, None, report, None, Vec::new());
         let mut term = Terminal::new(TestBackend::new(80, 26)).unwrap();
         term.draw(|f| draw(f, &mut app)).unwrap();
         let buf = term.backend().buffer();
@@ -1641,7 +1650,7 @@ C:/videos/a/very/deeply/nested/folder/with/an/extremely-long-file-name-indeed.mp
             crate::theme::set(p);
             for (w, h) in [(1u16, 1u16), (12, 9), (40, 12), (80, 24), (200, 60)] {
                 let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
-                let mut app = App::new(false, false, None, Report::default(), None, Vec::new());
+                let mut app = App::new(false, false, false, None, Report::default(), None, Vec::new());
                 app.cur = Some(dir.clone());
                 app.entries = vec![
                     Entry::Up,
@@ -1740,7 +1749,7 @@ C:/videos/a/very/deeply/nested/folder/with/an/extremely-long-file-name-indeed.mp
         let (short, wide) = (dir.join("short.mp4"), dir.join("影片_很长的名字_测试.mp4"));
         for (w, h) in [(80u16, 24u16), (100, 30), (200, 60)] {
             let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
-            let mut app = App::new(false, false, None, Report::default(), None, Vec::new());
+            let mut app = App::new(false, false, false, None, Report::default(), None, Vec::new());
             app.cur = Some(dir.clone());
             app.entries =
                 vec![Entry::Up, Entry::File(short.clone()), Entry::File(wide.clone())];
@@ -1799,7 +1808,7 @@ C:/videos/a/very/deeply/nested/folder/with/an/extremely-long-file-name-indeed.mp
         let dir = PathBuf::from("Q:/vids");
         let (w, h) = (100u16, 30u16);
         let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
-        let mut app = App::new(false, false, None, Report::default(), None, Vec::new());
+        let mut app = App::new(false, false, false, None, Report::default(), None, Vec::new());
         app.cur = Some(dir.clone());
         app.folders.clear(); // `App::new` listed the launch directory; this is a folder of its own
         app.videos = (0..5000)
@@ -1866,7 +1875,7 @@ C:/videos/a/very/deeply/nested/folder/with/an/extremely-long-file-name-indeed.mp
             }
         }
 
-        let mut app = App::new(false, false, None, Report::default(), None, Vec::new());
+        let mut app = App::new(false, false, false, None, Report::default(), None, Vec::new());
         app.cur = Some(dir.clone());
         let t = Instant::now();
         app.refresh();
@@ -1897,7 +1906,7 @@ C:/videos/a/very/deeply/nested/folder/with/an/extremely-long-file-name-indeed.mp
     #[test]
     fn filtering_narrows_the_listing_without_a_folder_to_read() {
         let dir = PathBuf::from("Q:/nowhere-at-all");
-        let mut app = App::new(false, false, None, Report::default(), None, Vec::new());
+        let mut app = App::new(false, false, false, None, Report::default(), None, Vec::new());
         app.cur = Some(dir.clone());
         app.folders.clear(); // `App::new` listed the launch directory; this is a folder of its own
         for name in ["alpha.mp4", "beta.mp4", "gamma.mp4", "ALPHABET.mp4"] {
@@ -1943,7 +1952,7 @@ C:/videos/a/very/deeply/nested/folder/with/an/extremely-long-file-name-indeed.mp
         std::fs::write(deep.join("deeper.mp4"), b"").unwrap();
 
         let mut app =
-            App::new(false, false, Some(root.clone()), Report::default(), None, Vec::new());
+            App::new(false, false, false, Some(root.clone()), Report::default(), None, Vec::new());
         assert!(matches!(app.entries[1], Entry::Dir(ref d) if *d == bare), "bare sorts first");
         app.list.select(Some(2)); // the drop
         app.toggle_at_cursor();
@@ -1993,7 +2002,7 @@ C:/videos/a/very/deeply/nested/folder/with/an/extremely-long-file-name-indeed.mp
             crate::theme::set(p);
             for (w, h) in [(80u16, 24u16), (100, 30), (200, 60)] {
                 let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
-                let mut app = App::new(false, false, None, Report::default(), None, Vec::new());
+                let mut app = App::new(false, false, false, None, Report::default(), None, Vec::new());
                 term.draw(|f| draw(f, &mut app)).unwrap();
                 let buf = term.backend().buffer();
                 let rows: Vec<String> = (0..h)
@@ -2427,6 +2436,7 @@ fn draw(f: &mut Frame, app: &mut App) {
     )]];
     opts.push(onoff(&t, t!("picker.toggle.overwrite"), "F", app.force));
     opts.push(onoff(&t, t!("picker.toggle.autocrop"), "C", app.autocrop));
+    opts.push(onoff(&t, t!("picker.toggle.cropedit"), "K", app.crop_edit));
     let opt_rows = pack_lines(opts, "   ", area.width, FOOT_MAX_ROWS);
 
     // The link key is advertised only when yt-dlp is installed: an offer the app
@@ -2457,6 +2467,7 @@ fn draw(f: &mut Frame, app: &mut App) {
             ("A", t!("picker.act.all")),
             ("B", t!("picker.act.markvr")),
             ("C", t!("picker.act.autocrop")),
+            ("K", t!("picker.act.cropedit")),
         ];
         if crate::dl::available() {
             v.push(("L", t!("picker.act.pastelink")));
@@ -2882,6 +2893,7 @@ fn on_key(app: &mut App, k: KeyEvent) -> Option<Option<Pick>> {
                 videos: app.selected.iter().cloned().collect(),
                 force: app.force,
                 autocrop: app.autocrop,
+                crop_edit: app.crop_edit,
                 dir: app.cur.clone(),
                 // only the marks that are in this batch: a mark left on a
                 // video the user did not start is not an instruction
@@ -2901,6 +2913,10 @@ fn on_key(app: &mut App, k: KeyEvent) -> Option<Option<Pick>> {
         }
         KeyCode::Char('c') | KeyCode::Char('C') => {
             app.autocrop = !app.autocrop;
+            crate::sound::play_click();
+        }
+        KeyCode::Char('k') | KeyCode::Char('K') => {
+            app.crop_edit = !app.crop_edit;
             crate::sound::play_click();
         }
         KeyCode::Char('a') | KeyCode::Char('A') => {
@@ -2980,13 +2996,14 @@ fn on_key(app: &mut App, k: KeyEvent) -> Option<Option<Pick>> {
 pub fn pick(
     force: bool,
     autocrop: bool,
+    crop_edit: bool,
     start: Option<PathBuf>,
     report: Report,
     dl_dir: Option<PathBuf>,
     dl_args: Vec<String>,
 ) -> Result<Option<Pick>> {
     let mut term = ratatui::init();
-    let mut app = App::new(force, autocrop, start, report, dl_dir, dl_args);
+    let mut app = App::new(force, autocrop, crop_edit, start, report, dl_dir, dl_args);
     let r = run(&mut term, &mut app);
     // The pools outlive the screen otherwise, and the batch about to run wants
     // the disk (and, for a probe, the process table) to itself.

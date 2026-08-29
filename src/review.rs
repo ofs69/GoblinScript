@@ -716,11 +716,11 @@ fn parse_params(body: &str) -> Result<(usize, style::Params)> {
     ))
 }
 
-fn header(field: &str, value: &str) -> Header {
+pub(crate) fn header(field: &str, value: &str) -> Header {
     Header::from_bytes(field.as_bytes(), value.as_bytes()).expect("static header")
 }
 
-fn json_response(v: &serde_json::Value) -> Response<std::io::Cursor<Vec<u8>>> {
+pub(crate) fn json_response(v: &serde_json::Value) -> Response<std::io::Cursor<Vec<u8>>> {
     Response::from_data(v.to_string().into_bytes())
         .with_header(header("Content-Type", "application/json"))
 }
@@ -728,7 +728,7 @@ fn json_response(v: &serde_json::Value) -> Response<std::io::Cursor<Vec<u8>>> {
 /// By this point the path is one of ours: an MP4-family original, a WebM-codec
 /// matroska (a WebM to the browser -- the type tag is what makes Firefox try),
 /// or the cache's normalized copy.
-fn video_ctype(p: &Path) -> &'static str {
+pub(crate) fn video_ctype(p: &Path) -> &'static str {
     match p.extension().and_then(|e| e.to_str()).map(|e| e.to_ascii_lowercase()) {
         Some(e) if e == "webm" || e == "mkv" => "video/webm",
         _ => "video/mp4",
@@ -737,7 +737,7 @@ fn video_ctype(p: &Path) -> &'static str {
 
 /// Stream a file off the main thread. The thread lives for one response;
 /// playback issues a handful of requests a second at most.
-fn serve_file_threaded(req: tiny_http::Request, path: PathBuf, ctype: &'static str) {
+pub(crate) fn serve_file_threaded(req: tiny_http::Request, path: PathBuf, ctype: &'static str) {
     std::thread::spawn(move || {
         let _ = serve_file(req, &path, ctype);
     });
@@ -746,7 +746,7 @@ fn serve_file_threaded(req: tiny_http::Request, path: PathBuf, ctype: &'static s
 /// One file request, with the Range handling browsers need to seek: a
 /// `Range: bytes=..` request gets a 206 with a Content-Range, capped at
 /// `RANGE_CHUNK`; no Range gets the whole file.
-fn serve_file(req: tiny_http::Request, path: &Path, ctype: &'static str) -> Result<()> {
+pub(crate) fn serve_file(req: tiny_http::Request, path: &Path, ctype: &'static str) -> Result<()> {
     let mut f = match std::fs::File::open(path) {
         Ok(f) => f,
         Err(_) => {
@@ -821,7 +821,7 @@ fn parse_range(value: &str, len: u64) -> Option<(u64, u64)> {
 }
 
 /// Best effort -- the URL is printed either way.
-fn open_browser(url: &str) {
+pub(crate) fn open_browser(url: &str) {
     #[cfg(windows)]
     let r = std::process::Command::new("cmd").args(["/C", "start", "", url]).spawn();
     #[cfg(not(windows))]

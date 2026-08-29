@@ -28,6 +28,12 @@ goblinscript D:\clips                   every video in that folder
 goblinscript video.mp4 --out D:\scripts put the scripts somewhere else
 ```
 
+Before the goblins start, a page opens in your browser with the part of the
+picture they are about to watch drawn on each shot. Drag that rect onto the
+action if they picked the wrong part, or click through if they got it right;
+what you draw is kept for that video. Turn the page off with `--no-crop-edit`,
+or with **K** in the picker, and a batch runs with nobody at the keyboard.
+
 `goblinscript --help` lists every option. A VR video opens a page in your
 browser to aim it once; flat video needs no flags at all. English and Chinese
 ship with it, and any `languages/*.json` you translate shows up on the **G**
