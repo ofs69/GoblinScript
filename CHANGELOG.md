@@ -34,6 +34,12 @@ version of GoblinScript, or new goblins, do not throw it away. Click straight
 through and the goblins use what they picked, as before. `--no-crop-edit`, or
 **K** in the picker, turns the page off for a batch that runs alone.
 
+**Watch before you decide.** Drag the bar under the picture to move through
+the video, or press Space to play it. The left and right arrows step one
+frame, with Shift one second; the up and down arrows go from shot to shot. L
+plays one shot again and again while you move the rect on it, and G shows you
+only what is inside the rect -- the picture as the goblins get it.
+
 **The goblins aim that rect more exactly.** They read the picture on a grid of
 24 by 24, and the rect used to move only one whole grid square at a time --
 about 4% of the picture, with six sizes between the closest and the whole

@@ -220,6 +220,17 @@ of a six-value zoom ladder. `autocrop.py` in the training tree is the twin, and
 `grid_check.py` binds them BOTH ways -- the constants by name, and a Gaussian
 fixture through the whole refinement (`CROP_FIXTURE` in this file's tests).
 
+**The page is a transport first.** A rect is judged against the action moving
+under it, so the bar is a real scrub -- press and drag anywhere along it, and
+the picture, the playhead and the overlay follow the pointer; the shot bands
+are paint under it (`pointer-events: none`), not click targets. Arrows step a
+frame (Shift a second, Alt a shot), **L** loops the shot being judged, and
+**G** is the goblins' own view: the rect blown up to fill the stage, which is
+what the encoder is actually handed. `probes/crop_page_check.py` in the
+training tree drives all of that in a real Chromium and reports where the drag
+put the video -- the crate's own test drives the SERVER and cannot press
+anything.
+
 **The page opens by default** (`--no-crop-edit`, or **K** in the picker, to
 skip it; `--crop-edit` demands it where it would be skipped). It is served on
 the `review.rs` pattern -- loopback, embedded, streaming the normalized copy the

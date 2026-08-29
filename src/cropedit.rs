@@ -71,6 +71,10 @@ impl Session {
         serde_json::json!({
             "segs": segs,
             "dur_ms": self.dur_ms,
+            // the FRAME grid the segment starts are counted on -- the page
+            // steps a frame at a time on it, so a step lands on a frame the
+            // goblins will actually read
+            "fps": self.fps,
             "aspect": self.aspect,
             "cap": crate::autocrop::MIN_SIDE_FRAC,
         })
@@ -410,6 +414,9 @@ mod tests {
                 .expect("state is json");
         assert_eq!(state["segs"].as_array().unwrap().len(), 2);
         assert_eq!(state["cap"].as_f64().unwrap(), crate::autocrop::MIN_SIDE_FRAC);
+        // the page steps a frame at a time, so it is told the frame grid
+        assert_eq!(state["fps"].as_f64().unwrap(), 30.0);
+        assert_eq!(state["dur_ms"].as_f64().unwrap(), 60_000.0);
         assert!(!state["segs"][0]["hand"].as_bool().unwrap());
 
         let after: serde_json::Value =

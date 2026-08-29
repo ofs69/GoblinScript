@@ -190,6 +190,12 @@ const README_COMMON: &str = r#"
   change its size. "Use for all shots" puts one box on the whole video.
   "Let the goblins pick" puts their own box back.
 
+  Drag the bar under the picture to move through the video, or press Space
+  to play it. The left and right arrows step one frame, with Shift one
+  second; the up and down arrows go from shot to shot. L plays one shot
+  again and again while you move the box on it, and G shows you only what
+  is inside the box -- the picture as the goblins get it.
+
   What you draw is kept for that video. A new version of GoblinScript, or
   new goblins, do not throw it away. K in the picker turns the page off for
   a batch that runs alone; --no-crop-edit does the same from a command

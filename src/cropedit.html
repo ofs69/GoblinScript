@@ -30,7 +30,8 @@
 
   /* the stage: the video, and the rect over exactly the picture inside it */
   #stage { flex: 1; position: relative; min-height: 0; background: #000;
-           border: 2px inset var(--edge); }
+           border: 2px inset var(--edge); overflow: hidden; }
+  video { transform-origin: center; }
   video { width: 100%; height: 100%; object-fit: contain; display: block; }
   #shade { position: absolute; inset: 0; pointer-events: none; }
   #shade > div { position: absolute; background: rgba(0,0,0,.62); }
@@ -43,13 +44,29 @@
   .grip.sw { left: -7px; bottom: -7px; cursor: nesw-resize; }
   .grip.se { right: -7px; bottom: -7px; cursor: nwse-resize; }
 
-  #tl { height: 30px; position: relative; background: var(--panel-2);
-        border: 2px inset var(--edge); cursor: pointer; }
-  #tl .seg { position: absolute; top: 0; bottom: 0; border-right: 1px solid var(--edge); }
+  /* The scrub bar. Judging a rect means watching the action move under it,
+     so this is a transport first and a shot map second: the whole width
+     seeks, and the shot bands are PAINT (pointer-events: none) rather than
+     click targets that would swallow every drag. */
+  #tl { height: 34px; position: relative; background: var(--panel-2);
+        border: 2px inset var(--edge); cursor: ew-resize; touch-action: none; }
+  #tl > div { pointer-events: none; }
+  #tl .seg { position: absolute; top: 0; bottom: 0; z-index: 1;
+             border-right: 1px solid var(--edge); }
   #tl .seg.crop { background: rgba(139,195,74,.28); }
   #tl .seg.hand { background: rgba(182,224,122,.55); }
   #tl .seg.here { outline: 2px solid var(--hi-bright); outline-offset: -2px; }
-  #head { position: absolute; top: 0; bottom: 0; width: 2px; background: var(--ink); }
+  /* the playhead and the hover marker sit ABOVE the shot bands, which are
+     repainted under them on every redraw */
+  #head { position: absolute; top: 0; bottom: 0; width: 2px; z-index: 3;
+          background: var(--ink); box-shadow: 0 0 0 1px rgba(0,0,0,.6); }
+  #hover { position: absolute; top: 0; bottom: 0; width: 1px; z-index: 2;
+           background: var(--hi-bright); opacity: .7; }
+  #buffer { position: absolute; top: 0; height: 3px; z-index: 2; background: var(--edge); }
+  #tlwrap { position: relative; }
+  #tltime { position: absolute; bottom: 100%; transform: translateX(-50%);
+            background: var(--panel); border: 1px solid var(--edge);
+            padding: 0 4px; font-size: 12px; white-space: nowrap; }
 
   .row { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
   button { font: inherit; color: var(--ink); background: var(--panel-2);
@@ -57,6 +74,7 @@
   button:hover { background: var(--panel); color: var(--hi-bright); }
   button.on { border-style: inset; color: var(--hi-bright); }
   button.go { background: var(--hi); color: #0e130c; font-weight: 700; }
+  .hidden { display: none; }
   .note { color: var(--ink-soft); font-size: 12px; }
   .warn { color: var(--danger); }
 
@@ -84,15 +102,27 @@
         <div class="grip sw" data-g="sw"></div><div class="grip se" data-g="se"></div>
       </div>
     </div>
-    <div id="tl"><div id="head"></div></div>
+    <div id="tlwrap">
+      <span id="tltime" class="hidden"></span>
+      <div id="tl">
+        <div id="buffer" class="hidden"></div>
+        <div id="hover" class="hidden"></div>
+        <div id="head"></div>
+      </div>
+    </div>
     <div class="row">
       <button id="play">&#9658;</button>
-      <button id="prev" data-t="cpage.prev">prev shot</button>
-      <button id="next" data-t="cpage.next">next shot</button>
-      <span class="note" id="clock">0:00</span>
+      <button id="back" title="&larr;">&#9664;&#9664;</button>
+      <button id="fwd" title="&rarr;">&#9654;&#9654;</button>
+      <button id="prev" data-t="cpage.prev">shot before</button>
+      <button id="next" data-t="cpage.next">shot after</button>
+      <button id="loop" data-t="cpage.loop">loop this shot</button>
+      <button id="gview" data-t="cpage.gview">goblin view</button>
+      <span class="note" id="clock">0:00 / 0:00</span>
       <span class="note" id="zoom"></span>
     </div>
-    <div class="note" id="hint" data-t="cpage.hint">Drag the rect to move it. Drag a corner to resize it. The goblins read what is inside it.</div>
+    <div class="note" id="hint" data-t="cpage.hint">Drag the rect to move it. Drag a corner to change its size. The goblins see only what is inside the rect.</div>
+    <div class="note" id="keys" data-t="cpage.keys">Drag the bar to scrub. Space plays. Left and right step one frame, with Shift one second. Up and down go from shot to shot. L loops the shot, G shows the goblins' own view. W A S D move the rect, + and - change its size, R gives the shot back to the goblins.</div>
     <div class="note warn" id="shape" hidden data-t="cpage.shape">This rect is not the shape of the video. The goblins were trained on the shape of the source.</div>
   </div>
   <div id="side">
@@ -129,7 +159,8 @@ function applyLang() {
 // ---- state ---------------------------------------------------------------
 // segs[i] = {t_ms, rect:[x,y,w,h], auto:[...], hand:bool}; every rect is a
 // FRACTION of the frame, which is what the plan on disk carries too.
-let segs = [], dur = 1, aspect = 16 / 9, cap = 0.6667, cur = 0, lock = true;
+let segs = [], dur = 1, fps = 30, aspect = 16 / 9, cap = 0.6667, cur = 0, lock = true;
+let gview = false;
 const $ = id => document.getElementById(id);
 const vid = $('vid');
 
@@ -147,7 +178,8 @@ async function pull(body) {
     : await fetch('/api/state');
   const s = await r.json();
   if (!s.segs) return;
-  segs = s.segs; dur = s.dur_ms || 1; aspect = s.aspect || 16 / 9; cap = s.cap || 0.6667;
+  segs = s.segs; dur = s.dur_ms || 1; fps = s.fps || 30;
+  aspect = s.aspect || 16 / 9; cap = s.cap || 0.6667;
   drawAll();
 }
 
@@ -176,8 +208,23 @@ function fix(r) {
 // ---- drawing -------------------------------------------------------------
 function drawAll() { drawRect(); drawShots(); drawTimeline(); }
 
+// The goblins' own view: the rect blown up to fill the stage, which is what
+// the encoder is handed after the crop. Judging a rect by the dimmed frame
+// says where it sits; this says what it CONTAINS, which is the question.
+function drawView() {
+  const on = gview && segs.length;
+  $('shade').classList.toggle('hidden', !!on);
+  $('rect').classList.toggle('hidden', !!on);
+  if (!on) { vid.style.transform = ''; return; }
+  const [x, y, w, h] = segs[cur].rect, p = picBox();
+  // the rect's centre to the picture's centre, then scaled to fill it
+  const tx = -(x + w / 2 - 0.5) * p.w / w, ty = -(y + h / 2 - 0.5) * p.h / h;
+  vid.style.transform = `scale(${1 / w}, ${1 / h}) translate(${tx * w}px, ${ty * h}px)`;
+}
+
 function drawRect() {
   if (!segs.length) return;
+  if (gview) { drawView(); }
   const s = segs[cur], p = picBox(), st = $('stage').getBoundingClientRect();
   const [x, y, w, h] = s.rect;
   const L0 = p.x - st.left + x * p.w, T0 = p.y - st.top + y * p.h;
@@ -230,7 +277,6 @@ function drawTimeline() {
     d.className = 'seg' + (whole ? '' : ' crop') + (s.hand ? ' hand' : '') + (i === cur ? ' here' : '');
     d.style.left = (100 * s.t_ms / dur) + '%';
     d.style.width = Math.max(100 * (end - s.t_ms) / dur, 0.2) + '%';
-    d.onclick = e => { e.stopPropagation(); vid.currentTime = s.t_ms / 1000 + 0.05; };
     tl.appendChild(d);
   });
   $('head').style.left = (100 * vid.currentTime * 1000 / dur) + '%';
@@ -279,38 +325,137 @@ $('done').onclick = async () => {
 };
 
 // ---- transport -----------------------------------------------------------
+// A rect can only be judged against the action moving under it, so the bar is
+// a real scrub: press anywhere on it and drag, and the picture and the
+// overlay follow the pointer. The shot bands are paint underneath.
+const tl = $('tl');
+let scrubbing = false, resume = false, loop = false;
+
+function timeAtX(clientX) {
+  const b = tl.getBoundingClientRect();
+  return clamp((clientX - b.left) / b.width, 0, 1) * dur / 1000;
+}
+function seek(t) {
+  const end = Math.max(dur / 1000 - 1 / fps, 0);
+  vid.currentTime = clamp(t, 0, end);
+}
+tl.addEventListener('pointerdown', e => {
+  scrubbing = true;
+  resume = !vid.paused;
+  vid.pause();
+  tl.setPointerCapture(e.pointerId);
+  seek(timeAtX(e.clientX));
+  e.preventDefault();
+});
+function onBarMove(e) {
+  const b = tl.getBoundingClientRect();
+  const x = clamp(e.clientX - b.left, 0, b.width);
+  $('hover').style.left = x + 'px';
+  $('hover').classList.remove('hidden');
+  const t = $('tltime');
+  t.textContent = fmt(timeAtX(e.clientX) * 1000);
+  t.style.left = x + 'px';
+  t.classList.remove('hidden');
+  if (scrubbing) seek(timeAtX(e.clientX));
+}
+tl.addEventListener('pointermove', onBarMove);
+// while a drag is running the pointer is allowed to leave the bar -- capture
+// usually delivers those moves, and this is what covers it when it does not
+addEventListener('pointermove', e => { if (scrubbing) onBarMove(e); });
+function offBar() {
+  $('hover').classList.add('hidden');
+  $('tltime').classList.add('hidden');
+}
+tl.addEventListener('pointerleave', () => { if (!scrubbing) offBar(); });
+addEventListener('pointerup', e => {
+  if (!scrubbing) return;
+  scrubbing = false;
+  try { tl.releasePointerCapture(e.pointerId); } catch (err) { /* already gone */ }
+  offBar();
+  if (resume) vid.play();
+});
+
 $('play').onclick = () => vid.paused ? vid.play() : vid.pause();
+$('back').onclick = () => step(-1);
+$('fwd').onclick = () => step(1);
 $('prev').onclick = () => jump(-1);
 $('next').onclick = () => jump(1);
+$('loop').onclick = () => { loop = !loop; $('loop').classList.toggle('on', loop); };
+$('gview').onclick = () => {
+  gview = !gview;
+  $('gview').classList.toggle('on', gview);
+  drawView();
+  if (!gview) drawRect();
+};
+// one frame, a second with shift: the two steps that answer "is the rect on
+// the action here" and "is it still on it a moment later"
+function step(frames) { vid.pause(); seek(vid.currentTime + frames / fps); }
 function jump(d) {
   const i = clamp(cur + d, 0, segs.length - 1);
-  vid.currentTime = segs[i].t_ms / 1000 + 0.05;
-  cur = i; drawAll();
+  cur = i;
+  seek(segs[i].t_ms / 1000 + 1 / fps);
+  drawAll();
 }
-$('tl').onclick = e => {
-  const b = $('tl').getBoundingClientRect();
-  vid.currentTime = dur * (e.clientX - b.left) / b.width / 1000;
-};
+
+function render() {
+  const ms = vid.currentTime * 1000;
+  $('head').style.left = (100 * ms / dur) + '%';
+  $('clock').textContent = fmt(ms) + ' / ' + fmt(dur);
+  const b = $('buffer');
+  if (vid.buffered.length) {
+    let lo = 0, hi = 0;
+    for (let i = 0; i < vid.buffered.length; i++) {
+      if (vid.buffered.start(i) <= vid.currentTime + 0.01) {
+        lo = vid.buffered.start(i); hi = vid.buffered.end(i);
+      }
+    }
+    b.style.left = (100 * lo * 1000 / dur) + '%';
+    b.style.width = (100 * (hi - lo) * 1000 / dur) + '%';
+    b.classList.remove('hidden');
+  }
+  const i = segAt(ms);
+  if (i !== cur) { cur = i; drawAll(); } else { drawRect(); }
+}
+for (const ev of ['timeupdate', 'seeked', 'seeking', 'play', 'pause']) {
+  vid.addEventListener(ev, render);
+}
 vid.addEventListener('timeupdate', () => {
-  $('clock').textContent = fmt(vid.currentTime * 1000);
-  const i = segAt(vid.currentTime * 1000);
-  if (i !== cur) { cur = i; drawAll(); } else { $('head').style.left = (100 * vid.currentTime * 1000 / dur) + '%'; }
+  // loop the shot being judged: the action inside a rect repeats until the
+  // rect is right, without a hand on the bar
+  if (!loop || !segs.length) return;
+  const end = cur + 1 < segs.length ? segs[cur + 1].t_ms : dur;
+  const ms = vid.currentTime * 1000;
+  if (ms >= end - 30 || ms < segs[cur].t_ms - 30) seek(segs[cur].t_ms / 1000 + 1 / fps);
 });
-vid.addEventListener('loadedmetadata', drawAll);
+vid.addEventListener('loadedmetadata', () => { drawAll(); render(); });
 addEventListener('resize', drawRect);
+
+// Keys: the arrows are the TRANSPORT (this page is watched more than it is
+// drawn on), WASD nudges the rect, R puts the goblins' own rect back.
 addEventListener('keydown', e => {
   if (e.target.tagName === 'INPUT') return;
-  const step = e.shiftKey ? 0.02 : 0.005;
+  const d = e.shiftKey ? 0.02 : 0.005;
   const r = segs.length ? segs[cur].rect.slice() : null;
   switch (e.key) {
     case ' ': e.preventDefault(); $('play').onclick(); break;
-    case 'ArrowLeft': if (e.altKey) { jump(-1); } else { r[0] -= step; nudge(r); } break;
-    case 'ArrowRight': if (e.altKey) { jump(1); } else { r[0] += step; nudge(r); } break;
-    case 'ArrowUp': r[1] -= step; nudge(r); break;
-    case 'ArrowDown': r[1] += step; nudge(r); break;
-    case '+': case '=': r[2] -= step; r[3] -= step; nudge(r); break;
-    case '-': r[2] += step; r[3] += step; nudge(r); break;
-    case 'a': $('auto').onclick(); break;
+    case 'ArrowLeft': e.preventDefault();
+      if (e.altKey) jump(-1); else step(e.shiftKey ? -fps : -1); break;
+    case 'ArrowRight': e.preventDefault();
+      if (e.altKey) jump(1); else step(e.shiftKey ? fps : 1); break;
+    case 'ArrowUp': e.preventDefault(); jump(-1); break;
+    case 'ArrowDown': e.preventDefault(); jump(1); break;
+    case ',': step(-1); break;
+    case '.': step(1); break;
+    case 'l': case 'L': $('loop').onclick(); break;
+    case 'g': case 'G': $('gview').onclick(); break;
+    case 'w': case 'W': r[1] -= d; nudge(r); break;
+    case 's': case 'S': r[1] += d; nudge(r); break;
+    case 'a': case 'A': r[0] -= d; nudge(r); break;
+    case 'd': case 'D': r[0] += d; nudge(r); break;
+    case '+': case '=': r[2] -= d; r[3] -= d; nudge(r); break;
+    case '-': r[2] += d; r[3] += d; nudge(r); break;
+    case 'r': $('auto').onclick(); break;
+    case 'R': $('autoall').onclick(); break;
   }
 });
 function nudge(r) { segs[cur].rect = fix(r); drawRect(); post({ i: cur, rect: segs[cur].rect }); }
