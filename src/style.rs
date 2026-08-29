@@ -81,8 +81,10 @@ fn crossings(s: &[f64]) -> Vec<usize> {
 /// forbidden -- not a probability threshold. `g` is the refractory in rows;
 /// without it a fitted prior's surplus lands as adjacent peak/valley pairs no
 /// author writes (33 ms half-strokes at 30 rows/s), chopping sustained fast
-/// sections into stubs. State = (kind of last event, rows since it, saturated
-/// at `g`), so the count is `1 + 2 * (g + 1)`. Exact, one pass.
+/// sections into stubs. `g` is the SPACING: consecutive events sit at least
+/// `g` rows apart, so `g - 1` rows between a pair are event-free. State =
+/// (kind of last event, rows since it, saturated at `g - 1`), so the count is
+/// `1 + 2 * g`. Exact, one pass.
 ///
 /// The prior is PER ROW, which is what a band-fitted bias needs -- the Python
 /// broadcasts `bias[band_of]` into the same argument, so one row's prior
@@ -97,8 +99,9 @@ fn alternating_events_rows(
     if t_len == 0 {
         return (Vec::new(), Vec::new());
     }
-    let n_a = g + 1; // ages 0..g-1, then FREE at index g
+    let n_a = g; // ages 0..g-2, then FREE at index g-1
     let ns = 1 + 2 * n_a;
+    let free = n_a - 1;
     let neg = f64::NEG_INFINITY;
     let base = |k: usize| 1 + k * n_a;
 
@@ -137,15 +140,15 @@ fn alternating_events_rows(
                 next[b0 + a] = score[b0 + a - 1] + lnn;
                 nb[b0 + a] = (b0 + a - 1) as u16;
             }
-            let stay = score[b0 + g] + lnn;
-            if stay > next[b0 + g] {
-                next[b0 + g] = stay;
-                nb[b0 + g] = (b0 + g) as u16;
+            let stay = score[b0 + free] + lnn;
+            if stay > next[b0 + free] {
+                next[b0 + free] = stay;
+                nb[b0 + free] = (b0 + free) as u16;
             }
         }
         // emit: legal from "none yet" and from the OPPOSITE kind at FREE age
         for (k, lp) in [(0usize, lpk), (1usize, lvl_)] {
-            let src_free = base(1 - k) + g;
+            let src_free = base(1 - k) + free;
             let src = if score[0] >= score[src_free] { 0 } else { src_free };
             let c = score[0].max(score[src_free]) + lp;
             if c > next[base(k)] {
@@ -2130,6 +2133,30 @@ mod tests {
         assert_eq!(rc, vec![1, 4, 7, 10, 13, 16, 19, 22, 25, 28, 31, 34, 37]);
         let (rv, _) = alternating_events_rows(&pk, &vl, &vec![0.5; n], 2);
         assert_eq!(rc, rv);
+    }
+
+    /// The refractory's exact reach, pinned in BOTH languages: `g` is the
+    /// SPACING, so a strong pair `g - 1` rows apart loses one event and a
+    /// pair `g` apart keeps both. The two fixtures above do not bind on the
+    /// refractory -- their events are already 3 and 4 rows apart -- so
+    /// without this one a reach that moved on one side alone would pass
+    /// every cross-language test. Values are `common.alternating_events`'s
+    /// own, and `grid_check.py` pins the same pair on the Python side.
+    #[test]
+    fn the_refractory_reach_is_the_spacing() {
+        for g in [2usize, 3] {
+            let mut pk = vec![1e-3f64; 8];
+            pk[0] = 0.98;
+            let mut vl = vec![1e-3f64; 8];
+            vl[g - 1] = 0.98;
+            let bias = vec![0.0f64; 8];
+            let (short, _) = alternating_events_rows(&pk, &vl, &bias, g);
+            assert_eq!(short.len(), 1, "g={g}: a pair {} apart must lose one", g - 1);
+            vl[g - 1] = 1e-3;
+            vl[g] = 0.98;
+            let (at_g, _) = alternating_events_rows(&pk, &vl, &bias, g);
+            assert_eq!(at_g.len(), 2, "g={g}: a pair {g} apart must keep both");
+        }
     }
 
     /// The band fit is a coordinate bisection whose coordinates COUPLE
