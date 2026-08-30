@@ -100,6 +100,7 @@
   "picker.drives": "驱动器",
   "picker.filter": "筛选：{q}",
   "picker.selected": "已选 {n} 个",
+  "picker.selected.elsewhere": "已选 {n} 个（{k} 个不在此文件夹）",
   "picker.duration.unknown": "--:--",
   "picker.scripted": "({total} 个中 {done} 个已有脚本：{by})",
   "picker.scripted.ai": "{n} 个 AI",

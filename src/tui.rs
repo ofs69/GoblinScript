@@ -662,6 +662,13 @@ impl App {
             .count()
     }
 
+    /// Everything picked from anywhere below `dir`, which is what THIS
+    /// listing accounts for: a folder toggled from its parent puts its videos
+    /// one level down, and the folder's own row is showing their tally.
+    fn n_selected_under(&self, dir: &Path) -> usize {
+        self.selected.range(dir.to_path_buf()..).take_while(|p| p.starts_with(dir)).count()
+    }
+
     /// Space on a folder: take every video it holds directly, or give them all
     /// back when they are already taken -- the same toggle A does over a
     /// listing, aimed at a folder the cursor never has to enter.
@@ -1576,6 +1583,85 @@ mod screen_tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    /// A bare count promises a batch the listing can show. Pick a video, walk
+    /// into the next folder, and "2 selected" sits over a screen holding one of
+    /// them -- while S starts both. The count says where they are.
+    #[test]
+    fn the_footer_counts_selections_this_folder_cannot_show() {
+        let _lang = speaking("en-US");
+        let root = std::env::temp_dir().join("goblin_selection_probe");
+        let (a, b) = (root.join("a"), root.join("b"));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&a).unwrap();
+        std::fs::create_dir_all(&b).unwrap();
+        std::fs::write(a.join("one.mp4"), b"").unwrap();
+        std::fs::write(b.join("two.mp4"), b"").unwrap();
+
+        let mut app = App::new(false, false, false, None, Report::default(), None, Vec::new());
+        app.selected.insert(a.join("one.mp4"));
+        app.selected.insert(b.join("two.mp4"));
+
+        // Standing in one of the two: the other pick is off screen, and the
+        // footer is the only thing that can say so.
+        app.cur = Some(a.clone());
+        let here = app.n_selected_under(&a);
+        assert_eq!(here, 1, "this folder's own pick was not counted");
+        assert_eq!(
+            selected_summary(app.selected.len(), here),
+            "2 selected (1 not in this folder)"
+        );
+
+        // Standing above both: a folder toggled from its parent keeps its
+        // videos one level down, and the folder's row is showing their tally.
+        // Nothing is hidden, so nothing is announced.
+        app.cur = Some(root.clone());
+        let here = app.n_selected_under(&root);
+        assert_eq!(here, 2, "picks one level down were called elsewhere");
+        assert_eq!(selected_summary(app.selected.len(), here), "2 selected");
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// End asks for the end of the report, which is where the last failure is.
+    /// Unbound, it fell through to the catch-all that dismisses the report --
+    /// the one thing a scroll key must never do.
+    #[test]
+    fn end_scrolls_the_report_to_its_last_failure() {
+        let _lang = speaking("en-US");
+        let failures: Vec<crate::errlog::Failure> = (0..20)
+            .map(|i| crate::errlog::Failure {
+                what: format!("clip{i:02}.mp4"),
+                stage: None,
+                causes: vec!["ffprobe could not read the video".into()],
+            })
+            .collect();
+        let mut app = App::new(
+            false,
+            false,
+            false,
+            None,
+            Report { status: None, failures, log: None },
+            None,
+            Vec::new(),
+        );
+        let mut term = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        term.draw(|f| draw(f, &mut app)).unwrap();
+        assert!(app.errors, "a failed batch did not open its report");
+
+        on_key(&mut app, KeyEvent::from(KeyCode::End));
+        assert!(app.errors, "End took the report off the screen");
+        term.draw(|f| draw(f, &mut app)).unwrap();
+
+        let buf = term.backend().buffer();
+        let screen: String = (0..24)
+            .map(|y| (0..80).map(|x| buf.cell((x, y)).unwrap().symbol()).collect::<String>())
+            .collect::<Vec<_>>()
+            .join("
+");
+        assert!(screen.contains("clip19.mp4"), "End did not reach the last failure:
+{screen}");
+    }
+
     /// A report longer than the screen is the case the scroll exists for, and
     /// the end of it is where the last failure is. Holding a key down must
     /// park on that end rather than scrolling the text off the top.
@@ -2341,6 +2427,19 @@ fn scripted_summary(
     Some(t!("picker.scripted", done = n_scripted, total = n_videos, by = by.join(", ")))
 }
 
+/// The selection as the footer says it. A bare count is a promise the listing
+/// cannot keep: pick five videos, walk into the next folder, and "5 selected"
+/// sits over a screen holding none of them -- and S starts a batch the user
+/// cannot see. So the ones this folder does not hold are counted out loud.
+fn selected_summary(n_selected: usize, n_here: usize) -> String {
+    let elsewhere = n_selected.saturating_sub(n_here);
+    if elsewhere == 0 {
+        t!("picker.selected", n = n_selected).to_string()
+    } else {
+        t!("picker.selected.elsewhere", n = n_selected, k = elsewhere).to_string()
+    }
+}
+
 /// `1:42:07` past the hour, `18:33` under it, `--:--` while the probe is still
 /// out (or came back empty). One shape per row, so the column stays a column.
 fn dur_label(dur_ms: Option<f64>) -> String {
@@ -2580,8 +2679,9 @@ fn draw(f: &mut Frame, app: &mut App) {
     // The two footers are packed to the terminal's width first: how many rows
     // they need is what the layout gives them, so nothing is cut off the right
     // edge on an 80-column window (the guide alone is ~150 columns of keys).
+    let here = app.cur.as_deref().map_or(0, |d| app.n_selected_under(d));
     let mut opts: Vec<Vec<Span>> = vec![vec![Span::styled(
-        t!("picker.selected", n = app.selected.len()),
+        selected_summary(app.selected.len(), here),
         if app.selected.is_empty() {
             Style::new().fg(rat(t.muted))
         } else {
@@ -2936,6 +3036,10 @@ fn on_key(app: &mut App, k: KeyEvent) -> Option<Option<Pick>> {
             KeyCode::PageUp => app.err_off = app.err_off.saturating_sub(10),
             KeyCode::PageDown => app.err_off += 10,
             KeyCode::Home => app.err_off = 0,
+            // The last failure is the end of the report, and End is the key
+            // that asks for it. Unbound, it fell to the catch-all below and
+            // took the report off the screen instead.
+            KeyCode::End => app.err_off = usize::MAX / 2,
             KeyCode::Char('e') | KeyCode::Char('E') => {
                 app.open_log();
                 crate::sound::play_click();
