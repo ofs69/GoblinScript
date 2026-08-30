@@ -2045,7 +2045,7 @@ C:/videos/a/very/deeply/nested/folder/with/an/extremely-long-file-name-indeed.mp
             let rows = pack_lines(help_items(&t, &entries), "  ", w, FOOT_MAX_ROWS);
             let plain = |l: &Line| -> String { l.spans.iter().map(|s| s.content.as_ref()).collect() };
             for (i, l) in rows.iter().enumerate() {
-                let n = plain(l).chars().count();
+                let n = cols(&plain(l));
                 assert!(n <= w as usize, "row {i} is {n} columns at width {w}");
                 // an item is never split: each row holds whole "Key does a thing"s
                 assert_eq!(
@@ -2061,6 +2061,83 @@ C:/videos/a/very/deeply/nested/folder/with/an/extremely-long-file-name-indeed.mp
                 assert_eq!(drawn, entries.len(), "items dropped at width {w}");
             }
         }
+    }
+
+    /// Every label in the Chinese picker is double-width, so a row counted by
+    /// CHARACTER is half the row that draws. Wrapping, the inset and the
+    /// balance step read one width function, and this is what says so.
+    #[test]
+    fn packed_rows_measure_double_width_labels_in_columns() {
+        // The picker's own footer, in the language that makes it widest.
+        let labels = ["上/下 移动", "已选 3 个", "回车 打开", "S 开始", "Q 退出"];
+        let items: Vec<Vec<Span<'static>>> =
+            labels.iter().map(|s| vec![Span::raw(s.to_string())]).collect();
+        let plain = |l: &Line| -> String { l.spans.iter().map(|s| s.content.as_ref()).collect() };
+        for w in [12u16, 20, 24, 30, 40, 45, 60, 80] {
+            let rows = pack_lines(items.clone(), "  ", w, FOOT_MAX_ROWS);
+            let mut seen: Vec<String> = Vec::new();
+            for (i, l) in rows.iter().enumerate() {
+                let p = plain(l);
+                assert!(cols(&p) <= w as usize, "row {i} draws {} columns at width {w}", cols(&p));
+                // The inset is blank cells, and there are exactly as many as
+                // the packing arithmetic charged for.
+                assert_eq!(
+                    p.chars().take_while(|c| *c == ' ').count(),
+                    FOOT_INSET,
+                    "row {i} draws a different inset than it was measured at, width {w}"
+                );
+                for it in p.trim_start().split("  ") {
+                    seen.push(it.to_string());
+                }
+            }
+            // Items are whole, in order, and none is invented.
+            assert!(
+                labels.starts_with(&seen.iter().map(|s| s.as_str()).collect::<Vec<_>>()[..]),
+                "items reordered or split at width {w}: {seen:?}"
+            );
+            if w >= 60 {
+                assert_eq!(seen.len(), labels.len(), "items dropped at width {w}");
+            }
+            // The orphan rule: a lone item on the last row is allowed ONLY
+            // when the item above it could not have come down to join it.
+            if rows.len() >= 2 {
+                let (last, prev) = (rows.len() - 1, rows.len() - 2);
+                let n_last = plain(&rows[last]).trim_start().split("  ").count();
+                let prev_items: Vec<String> =
+                    plain(&rows[prev]).trim_start().split("  ").map(|s| s.to_string()).collect();
+                if n_last == 1 && prev_items.len() > 1 {
+                    let together = FOOT_INSET
+                        + cols(prev_items.last().unwrap())
+                        + 2
+                        + cols(plain(&rows[last]).trim_start());
+                    assert!(
+                        together > w as usize,
+                        "an orphan was left on the last row at width {w}: it fits in {together}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// The balance step itself, pinned on the width where it fires: five
+    /// Chinese labels wrap 4+1, and the fourth comes down to sit with the
+    /// fifth rather than leaving it alone.
+    #[test]
+    fn a_lone_last_item_pulls_its_neighbour_down() {
+        let labels = ["上/下 移动", "已选 3 个", "回车 打开", "S 开始", "Q 退出"];
+        let items: Vec<Vec<Span<'static>>> =
+            labels.iter().map(|s| vec![Span::raw(s.to_string())]).collect();
+        let plain = |l: &Line| -> String { l.spans.iter().map(|s| s.content.as_ref()).collect() };
+        let rows = pack_lines(items, "  ", 45, FOOT_MAX_ROWS);
+        let drawn: Vec<String> = rows.iter().map(|l| plain(l)).collect();
+        assert_eq!(
+            drawn,
+            vec![
+                " 上/下 移动  已选 3 个  回车 打开".to_string(),
+                " S 开始  Q 退出".to_string(),
+            ],
+            "the last row was left holding one item"
+        );
     }
 }
 
@@ -2117,6 +2194,11 @@ fn onoff(t: &Theme, label: &str, key: &str, on: bool) -> Vec<Span<'static>> {
 /// from how many rows came back. `max_rows` is the floor under the list above:
 /// a terminal too narrow for even that many rows loses the remainder, which by
 /// then is a window no screen fits in.
+/// The blank cells a packed row opens with. The wrap arithmetic, the balance
+/// step and the drawn prefix all read THIS -- a row measured at one inset and
+/// drawn at another is a row that fits on paper and overflows on screen.
+const FOOT_INSET: usize = 1;
+
 fn pack_lines(
     items: Vec<Vec<Span<'static>>>,
     sep: &str,
@@ -2125,28 +2207,57 @@ fn pack_lines(
 ) -> Vec<Line<'static>> {
     let w = width.max(8) as usize;
     let span_w = |s: &[Span<'static>]| s.iter().map(|x| cols(&x.content)).sum::<usize>();
-    let (mut rows, mut cur, mut cw) = (Vec::new(), Vec::<Span<'static>>::new(), 0usize);
+    let sep_w = cols(sep);
+    // Items stay whole and stay APART until wrapping is done: the balance step
+    // below moves one between rows, which a flat run of spans cannot express.
+    let (mut rows, mut cur, mut cw) = (Vec::<Vec<Vec<Span<'static>>>>::new(), Vec::new(), 0usize);
     for it in items {
         let n = span_w(&it);
         if cur.is_empty() {
-            cur.push(Span::raw(" "));
-            cw = 1;
-        } else if cw + cols(sep) + n > w {
-            rows.push(Line::from(std::mem::take(&mut cur)));
-            cur.push(Span::raw(" "));
-            cw = 1;
+            cw = FOOT_INSET + n;
+        } else if cw + sep_w + n > w {
+            rows.push(std::mem::take(&mut cur));
+            cw = FOOT_INSET + n;
         } else {
-            cur.push(Span::raw(sep.to_string()));
-            cw += cols(sep);
+            cw += sep_w + n;
         }
-        cw += n;
-        cur.extend(it);
+        cur.push(it);
     }
     if !cur.is_empty() {
-        rows.push(Line::from(cur));
+        rows.push(cur);
     }
     rows.truncate(max_rows.max(1));
-    rows
+
+    // One short item alone under a full row reads as a mistake, and wrapping
+    // cannot see it: a row is committed before the row after it exists. So the
+    // last pair is balanced once packing is finished, and only where the two
+    // still fit the frame together. This is what the double-width languages
+    // hit -- a CJK key guide holds fewer items per row, so the remainder is
+    // more often exactly one. Balancing AFTER the truncation is deliberate:
+    // the other order would move an item into a row nobody sees.
+    if rows.len() >= 2 {
+        let last = rows.len() - 1;
+        if rows[last].len() == 1 && rows[last - 1].len() > 1 {
+            let moved = span_w(rows[last - 1].last().expect("row holds two or more"));
+            if FOOT_INSET + moved + sep_w + span_w(&rows[last][0]) <= w {
+                let it = rows[last - 1].pop().expect("row holds two or more");
+                rows[last].insert(0, it);
+            }
+        }
+    }
+
+    rows.into_iter()
+        .map(|row| {
+            let mut spans = vec![Span::raw(" ".repeat(FOOT_INSET))];
+            for (i, it) in row.into_iter().enumerate() {
+                if i != 0 {
+                    spans.push(Span::raw(sep.to_string()));
+                }
+                spans.extend(it);
+            }
+            Line::from(spans)
+        })
+        .collect()
 }
 
 /// How many rows a footer may take before the list starts paying for it.
