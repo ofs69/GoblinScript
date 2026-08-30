@@ -1533,6 +1533,49 @@ mod screen_tests {
         assert!(app.errors, "X did not bring the report back");
     }
 
+    /// Clearing a filter is a RUN of backspaces, and the run does not stop at
+    /// the empty box: the last stroke finds nothing to delete, and the one
+    /// after it -- or the key repeat that is really one long press -- used to
+    /// walk out of the folder. The listing the user was narrowing is gone, and
+    /// nothing on screen said it would be. Left is what leaves a folder.
+    #[test]
+    fn backspacing_a_filter_away_stays_in_the_folder() {
+        let _lang = speaking("en-US");
+        let root = std::env::temp_dir().join("goblin_backspace_probe");
+        let here = root.join("here");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&here).unwrap();
+        for n in ["clip_a.mp4", "clip_b.mp4", "other.mp4"] {
+            std::fs::write(here.join(n), b"").unwrap();
+        }
+
+        let mut app = App::new(false, false, false, None, Report::default(), None, Vec::new());
+        app.cur = Some(here.clone());
+        app.refresh();
+
+        on_key(&mut app, KeyEvent::from(KeyCode::Char('/')));
+        for c in "clip".chars() {
+            on_key(&mut app, KeyEvent::from(KeyCode::Char(c)));
+        }
+        assert_eq!(app.filter, "clip", "the filter never took the keystrokes");
+        let files = |a: &App| a.entries.iter().filter(|e| matches!(e, Entry::File(_))).count();
+        assert_eq!(files(&app), 2, "the filter did not narrow the listing");
+
+        // Far more strokes than the filter is long: a held key does not stop
+        // politely at the empty box.
+        for _ in 0..10 {
+            on_key(&mut app, KeyEvent::from(KeyCode::Backspace));
+        }
+        assert!(app.filter.is_empty(), "the filter survived its own backspaces");
+        assert_eq!(app.cur.as_deref(), Some(here.as_path()), "backspace left the folder");
+
+        // ...and the key that IS the way out still is.
+        on_key(&mut app, KeyEvent::from(KeyCode::Left));
+        assert_eq!(app.cur.as_deref(), Some(root.as_path()), "Left no longer goes up");
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     /// A report longer than the screen is the case the scroll exists for, and
     /// the end of it is where the last failure is. Holding a key down must
     /// park on that end rather than scrolling the text off the top.
@@ -3089,7 +3132,11 @@ fn on_key(app: &mut App, k: KeyEvent) -> Option<Option<Pick>> {
         KeyCode::PageDown => app.move_by(20),
         KeyCode::Home => app.move_by(i64::MIN / 2),
         KeyCode::End => app.move_by(i64::MAX / 2),
-        KeyCode::Left | KeyCode::Backspace => app.go_up(),
+        // Left alone leaves the folder. Backspace does NOT: clearing a filter
+        // is a run of backspaces, the last of which finds an empty box, and a
+        // key that walks out of the folder on that stroke throws away the
+        // listing the user was reading.
+        KeyCode::Left => app.go_up(),
         KeyCode::Right | KeyCode::Enter => app.activate(),
         KeyCode::Char(' ') => {
             app.toggle_at_cursor();
