@@ -277,10 +277,19 @@ pub fn probe(
     if starts.is_empty() {
         starts.push(0);
     }
-    pb.set_length(starts.len() as u64);
-
     let cut_frames = shot_frames(cuts_ms, man.grid_fps);
     let shot_of = |frame: usize| cut_frames.partition_point(|&c| c <= frame);
+    let n_shots = cut_frames.len() + 1;
+
+    // The bar covers BOTH passes. Sampling is one window every PROBE_EVERY_S
+    // of video, pipelined against the GPU; the placement search after it is up
+    // to seven candidate framings a shot at SEARCH_WINDOWS windows each,
+    // decoded one at a time with a fresh seek apiece. On a video with many
+    // cuts the second pass is the longer one, and a bar that ended at the
+    // first reached 100% with most of the work still to do -- which reads as a
+    // hang, not as progress.
+    let placing = head.is_some();
+    pb.set_length(bar_units(starts.len(), n_shots, placing));
 
     let mut x: Vec<u8> = Vec::with_capacity((man.clip_len / 2) * 2 * res * res * 3);
     let mut slab: Vec<i8> = vec![0; group * row_bytes];
@@ -349,7 +358,6 @@ pub fn probe(
 
     // per-shot rects; under-sampled shots take the clip-global rect
     let pic = picture_box(&row_max, &col_max, res);
-    let n_shots = cut_frames.len() + 1;
     let all: Vec<&RowVote> = votes.iter().collect();
     let glob = shot_rect(&all, grid, pic);
     let shot_start = |s: usize| if s == 0 { 0 } else { cut_frames[s - 1] };
@@ -372,6 +380,10 @@ pub fn probe(
     let mut moved = 0usize;
     if let Some(head) = head {
         for s in 0..n_shots {
+            // Counted per SHOT, before the early-outs below: a shot that keeps
+            // its rect for free still moves the bar, because the bar is
+            // measuring the pass, not the encodes it happened to spend.
+            pb.set_position(starts.len() as u64 + s as u64);
             let rect = rects[s];
             if is_whole(rect) {
                 continue; // nothing placed, nothing to place better
@@ -435,6 +447,7 @@ pub fn probe(
                 rects[s] = best.0;
             }
         }
+        pb.set_position(bar_units(starts.len(), n_shots, true));
     }
 
     // escape instrument over every sampled row, against its shot's rect
@@ -461,6 +474,13 @@ pub fn probe(
         escape_share: escaped as f64 / votes.len() as f64,
         placed: moved,
     })
+}
+
+/// What the auto-crop bar counts: one unit per sampled window, then one per
+/// shot the placement search visits. Without a conf head there is no second
+/// pass, and the sampling IS the stage.
+fn bar_units(n_windows: usize, n_shots: usize, placing: bool) -> u64 {
+    (n_windows + if placing { n_shots } else { 0 }) as u64
 }
 
 /// One rect -> the decode-chain `crop` filter in pixels of a `w`x`h` picture,
@@ -982,6 +1002,25 @@ pub fn stage_line(plan: &Plan, reused: bool) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The stage is two passes, and on a cut-heavy video the SECOND is the
+    /// bigger one: 170 cuts is 171 shots to place, against the ~120 windows a
+    /// half-hour video is sampled at. A bar that ended at the sampling sat
+    /// full for the longer half of the stage.
+    #[test]
+    fn the_bar_counts_the_placement_pass_too() {
+        let windows = (30.0 * 60.0 / PROBE_EVERY_S) as usize; // half an hour
+        let shots = 171; // the 170 cuts that started this
+        let units = bar_units(windows, shots, true);
+        assert_eq!(units, (windows + shots) as u64, "a pass went uncounted");
+        assert!(
+            units - windows as u64 > windows as u64,
+            "placing {shots} shots is the larger half of the stage, and the bar              reached 100% before it began"
+        );
+        // No conf head means no placement pass, and then the sampling really
+        // is the whole stage.
+        assert_eq!(bar_units(windows, shots, false), windows as u64);
+    }
 
     #[test]
     fn percentile_matches_numpy() {
