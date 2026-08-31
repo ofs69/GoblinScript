@@ -2111,15 +2111,18 @@ fn ease_cut_seams(actions: &mut Vec<Seam>, limit: f64) {
 /// times never move, no reversal is deleted -- a clamped reversal keeps its
 /// instant and gives up depth, and the level re-anchors at `limit` instead
 /// of instantly. Each cut time is the INCOMING shot's first row time, so
-/// the forced pair spans the row ending there and the neighbourhood runs
-/// two rows back and one forward -- a row of sub-frame slack around the
-/// pair on either side. Port of `jepa_infer.slew_cut_seams`.
+/// the forced pair spans the row ending there; the neighbourhood runs 2.5
+/// rows back and 1.5 forward -- a row of slack around the pair for
+/// sub-frame emission and RDP relocating its vertices, on HALF-ROW
+/// boundaries because a whole-row bound lands exactly on a row time and
+/// float error would decide which side a vertex falls. Port of
+/// `jepa_infer.slew_cut_seams`.
 fn slew_cut_seams(actions: &mut [Action], cut_times_ms: &[f64], limit: f64, row_ms: f64) {
     if actions.len() < 2 {
         return;
     }
     for &c in cut_times_ms {
-        let k0 = actions.partition_point(|a| (a.at as f64) < c - 2.0 * row_ms);
+        let k0 = actions.partition_point(|a| (a.at as f64) < c - 2.5 * row_ms);
         let mut j = k0.saturating_sub(1);
         while j + 1 < actions.len() {
             let (p0, at0) = (actions[j].pos, actions[j].at);
@@ -2133,7 +2136,7 @@ fn slew_cut_seams(actions: &mut [Action], cut_times_ms: &[f64], limit: f64, row_
                     // round UP past the limit (the clamp's own rule)
                     let step = lim as i64;
                     actions[j + 1].pos = (p0 + if d > 0 { step } else { -step }).clamp(0, 100);
-                } else if at1 as f64 > c + row_ms {
+                } else if at1 as f64 > c + 1.5 * row_ms {
                     break; // past the seam and playable
                 }
             }
@@ -2902,9 +2905,27 @@ mod tests {
             pairs(&moved),
             vec![(0, 10), (1867, 38), (2000, 71), (2033, 79), (2233, 97), (3967, 40)]
         );
+        // the row-snap leak: the video's own step lands ONE ROW BEFORE the
+        // snapped edge, so the slam is wholly inside shot A and its end
+        // vertex rounds to just below c - 2 rows -- caught only because
+        // the walk starts on a half-row boundary below that
+        let mut p2 = vec![0.0f64; 120];
+        for (i, v) in p2.iter_mut().enumerate() {
+            *v = match i {
+                0..=55 => 10.0 + 28.0 * (i as f64) / 55.0,
+                56..=58 => 38.0 - 3.0 * ((i - 56) as f64) / 2.0,
+                59..=61 => 35.0 + 60.0 * ((i - 59) as f64) / 2.0,
+                _ => 96.0 - 56.0 * ((i - 62) as f64) / 57.0,
+            };
+        }
+        let snapped = extrema_actions(&p2, &t, &[0, 62, 120], None, 30.0, 0.1, &[], 250.0);
+        assert_eq!(
+            pairs(&snapped),
+            vec![(0, 10), (1833, 38), (1933, 35), (2000, 51), (2033, 59), (2067, 67), (3967, 40)]
+        );
         // the invariant the slew exists for: nothing in the eased lists asks
         // for more than the limit
-        for a in [&on, &moved] {
+        for a in [&on, &moved, &snapped] {
             for w in a.windows(2) {
                 let v = (w[1].pos - w[0].pos).abs() as f64 * 1000.0 / (w[1].at - w[0].at) as f64;
                 assert!(v <= 250.0, "{}ms -> {}ms runs {v:.0} pos/s", w[0].at, w[1].at);
