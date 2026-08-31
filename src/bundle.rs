@@ -87,6 +87,18 @@ pub struct Manifest {
     #[serde(default)]
     pub ctx: usize,
     pub env_ctx: usize,
+    /// The envelope head SAMPLES rather than publishing an expectation, so
+    /// `env_step` takes a base draw per row. A categorical bundle has the
+    /// field false (and a pre-flow one has no field at all, which
+    /// deserializes to the same).
+    #[serde(default)]
+    pub env_flow: bool,
+    /// Authorship seed the base draw is keyed by, beside the absolute row.
+    #[serde(default)]
+    pub env_seed: u64,
+    /// Support of the base draw, `[0, env_base_hi)`.
+    #[serde(default)]
+    pub env_base_hi: f64,
     pub heads: Heads,
     pub still_eps: f64,
     pub ext_snap: f64,

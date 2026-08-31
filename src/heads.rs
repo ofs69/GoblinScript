@@ -302,7 +302,7 @@ impl Decode {
         let x = &self.buf[a..a + n * self.row_bytes];
         let cut = crate::boundaries::cut_flags(&self.cut_rows, fs, fe);
         let out = run_chunk(
-            &mut self.head, &mut self.env, &self.man, x, &cut, n, off, keep, self.has_conf,
+            &mut self.head, &mut self.env, &self.man, x, &cut, n, off, keep, self.has_conf, fs,
         )?;
 
         self.vmarg.extend_from_slice(&out.vmarg);
@@ -380,6 +380,27 @@ impl Decode {
     }
 }
 
+/// The flow envelope's base sample for one ABSOLUTE row, uniform on
+/// `[0, hi)` -- `common.env_base_draw` in Rust.
+///
+/// The head's sampler is an ODE, so its output is a pure function of this
+/// draw, which makes the draw the one place this decoder and `jepa_infer`
+/// could disagree. Keying it on the absolute row is what lets both reach
+/// the same sample without exchanging state: a decode chunk that reseeds
+/// its AR buffer does not reseed this. SplitMix64's finalizer, then the
+/// top 53 bits as the mantissa -- integer mixing and one multiply, with no
+/// `ln` or `cos` to disagree in the last few ULP.
+fn env_base_draw(row: u64, seed: u64, hi: f64) -> f32 {
+    const G: u64 = 0x9E37_79B9_7F4A_7C15;
+    let mut z = row
+        .wrapping_add(seed.wrapping_mul(G))
+        .wrapping_add(G);
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    z ^= z >> 31;
+    (((z >> 11) as f64) * (-53f64).exp2() * hi) as f32
+}
+
 /// One chunk through the head, then the envelope stepped over its rows.
 /// `off..off + keep` is the owned slice; everything outside it is context.
 #[allow(clippy::too_many_arguments)]
@@ -393,6 +414,9 @@ fn run_chunk(
     off: usize,
     keep: usize,
     has_conf: bool,
+    // the chunk's first ABSOLUTE row: the flow envelope's base draw is
+    // keyed to it, so a chunk has to say where it starts
+    fs: usize,
 ) -> Result<ChunkOut> {
     let xs = vec![1i64, n as i64, man.dim as i64, man.grid as i64, man.grid as i64];
     let xt = ort::value::TensorRef::from_array_view((xs, x)).map_err(ort_err)?;
@@ -427,9 +451,16 @@ fn run_chunk(
             .map_err(ort_err)?;
         let bv = ort::value::TensorRef::from_array_view((vec![1i64, man.env_ctx as i64], &buf[..]))
             .map_err(ort_err)?;
-        let eo = env
-            .run(ort::inputs!["h_t" => hv, "buf" => bv])
-            .map_err(ort_err)?;
+        let eo = if man.env_flow {
+            let e0 = [env_base_draw((fs + i) as u64, man.env_seed, man.env_base_hi)];
+            let ev0 = ort::value::TensorRef::from_array_view((vec![1i64, 1], &e0[..]))
+                .map_err(ort_err)?;
+            env.run(ort::inputs!["h_t" => hv, "buf" => bv, "e0" => ev0])
+                .map_err(ort_err)?
+        } else {
+            env.run(ort::inputs!["h_t" => hv, "buf" => bv])
+                .map_err(ort_err)?
+        };
         let (_s, ev) = eo["env"].try_extract_tensor::<f32>().map_err(ort_err)?;
         let et = ev[0];
         if i >= off && i < off + keep {
@@ -526,6 +557,50 @@ fn hold_shot_tails(vmarg: &mut [f64], shot_edges: &[usize]) {
         let (lo, hi) = (w[0], w[1]);
         if hi - lo >= 2 && vmarg[hi - 2].is_finite() {
             vmarg[hi - 1] = vmarg[hi - 2];
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::env_base_draw;
+
+    /// The base draw is the one place this decoder and `jepa_infer` could
+    /// integrate a different ODE, and nothing else in either language would
+    /// notice: the envelope would still be smooth, still bounded, still
+    /// plausible, and only the artifact columns would drift. So the two
+    /// implementations are pinned to each other by VALUE here, cut from
+    /// `common.env_base_draw` -- the same way `grid_check` binds the styling
+    /// constants the two languages share.
+    #[test]
+    fn the_base_draw_matches_common_env_base_draw() {
+        const ROWS: [u64; 7] = [0, 1, 2, 17, 1000, 123456, 999999];
+        const HI: f64 = 6.0;
+        const REF: [[f32; 7]; 3] = [
+            [5.299864849, 3.399369451, 3.547138405, 3.012127139,
+             1.409063295, 1.357027354, 2.671600102],
+            [2.589167982, 4.474690544, 4.494898103, 2.348602075,
+             4.886225764, 1.545966942, 4.033623147],
+            [0.158602630, 5.826016522, 3.573828488, 1.969978886,
+             4.640479842, 3.537259637, 4.671366349],
+        ];
+        for (seed, want) in REF.iter().enumerate() {
+            for (row, &w) in ROWS.iter().zip(want.iter()) {
+                let got = env_base_draw(*row, seed as u64, HI);
+                assert!(
+                    (got - w).abs() < 1e-6,
+                    "row {row} seed {seed}: {got} != {w}"
+                );
+            }
+        }
+    }
+
+    /// Every draw lands inside the support the head's clamp assumes.
+    #[test]
+    fn the_base_draw_stays_inside_its_support() {
+        for row in 0..5000u64 {
+            let e = env_base_draw(row, 0, 6.0);
+            assert!((0.0..6.0).contains(&e), "row {row}: {e}");
         }
     }
 }

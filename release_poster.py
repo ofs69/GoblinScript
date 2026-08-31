@@ -49,7 +49,7 @@ one convention covers all three versions: the page compares versions and never
 conventions. The last two rows read written speed alone and take the person's
 line from the script's own actions, so they never needed the distinction.
 
-    python goblinscript/release_poster.py --out infer_out/release_v040rc2
+    python goblinscript/release_poster.py --out infer_out/release_v040
 """
 import argparse
 import textwrap
@@ -106,30 +106,32 @@ SECTIONS = [
     ("HOW CLOSE TO THE PERSON'S SCRIPT", BRIGHT, WAVE,
      "A longer bar is better on all three rows.", [
         ("How well the script follows the action",
-         None, [0.793, 0.823, 0.827], "{:.3f}", 2,
-         "1.000 is a perfect match with the person's script."),
+         None, [0.793, 0.823, 0.823], "{:.3f}", None,
+         "1.000 is a perfect match with the person's script. Version 0.4.0 "
+         "and Version 0.3.0 are equal here."),
         ("How well the script follows the action, on difficult videos",
-         None, [0.720, 0.787, 0.785], "{:.3f}", 1,
+         None, [0.716, 0.787, 0.787], "{:.3f}", None,
          "The two most difficult videos of the eleven. Every version is "
-         "further behind here, and Version 0.1.0 the furthest."),
+         "further behind here, and Version 0.1.0 the furthest. The two "
+         "newer versions are equal."),
         ("Changes of direction at the correct time",
-         None, [83.3, 87.8, 87.0], "{:.1f}%", 1,
+         None, [83.8, 88.1, 87.0], "{:.1f}%", 1,
          "Correct to 1/15 second. The two newer versions are close here."),
     ]),
     ("MOVEMENT THAT IS NOT IN THE PERSON'S SCRIPT", WARN, SQUINT,
      "Longer is worse. A white line marks the person's own count.", [
         ("Changes of direction that the person did not make",
-         None, [28.2, 34.0, 33.0], "{:.1f}%", 0,
+         None, [28.3, 34.3, 33.8], "{:.1f}%", 0,
          "A version that creates more movements finds more of the person's "
          "movements, and also makes more that the person did not."),
         ("Fast movements in each minute",
-         22.5, [4.2, 31.3, 26.0], "{:.1f}", None,
+         22.5, [4.5, 33.8, 29.8], "{:.1f}", None,
          "Version 0.1.0 creates far fewer than the person. The two newer "
          "versions create more, and Version 0.4.0 is the nearer of them."),
         ("Sudden fast movements where the video is slow, in each minute",
-         0.5, [7.4, 14.4, 12.2], "{:.1f}", None,
+         0.5, [7.3, 14.3, 11.0], "{:.1f}", None,
          "The person creates almost none. Every version creates too many. "
-         "Version 0.4.0 creates 15% fewer than Version 0.3.0."),
+         "Version 0.4.0 creates 23% fewer than Version 0.3.0."),
     ]),
 ]
 
@@ -147,7 +149,9 @@ NOTE_COLS, NOTE_LEAD = 72, 0.26
 WHATS_NEW = (
     "The goblins learned on more videos, and they look further ahead in "
     "one.\n"
-    "The bars above are what that was worth."
+    "They also select how deep each stroke goes. Before, they used the "
+    "average depth.\n"
+    "This makes fewer sudden fast movements in the slow parts of a video."
 )
 
 
@@ -213,7 +217,7 @@ def bar_row(ax, y, label, person, values, fmt, lead, note):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("--out", default="infer_out/release_v040rc2")
+    ap.add_argument("--out", default="infer_out/release_v040")
     ap.add_argument("--name", default="goblinscript_versions.png")
     args = ap.parse_args()
 
