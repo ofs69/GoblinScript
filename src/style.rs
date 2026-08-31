@@ -1214,19 +1214,32 @@ fn stroke_veto(kind: &[i8], vmarg: &[f64], thr: f64, flank: usize) -> Vec<i8> {
 /// Regularize stroke depth: pull each reversal endpoint toward the running median
 /// of same-polarity endpoints, keeping the stroke's shape.
 ///
-/// A stroke's reversal is a local extremum of the composed track. This finds
-/// them with the SAME smoothed-derivative sign-flip detector `extrema_actions`
-/// writes with (so the rows it moves are exactly the ones that become actions),
-/// splits them into tops and bottoms, and blends each toward its polarity's
-/// mean over a `window_s` slice of neighbours. The shot's own ends are fixed
-/// anchors; each monotonic run between anchors is then affine-remapped from its
-/// old endpoint pair onto the new one -- the within-run progress profile (the
-/// model's integrated-velocity shape) is preserved exactly, only the reach
-/// changes. `dose <= 0` returns the input untouched (the identity).
+/// A stroke's reversal is a local extremum of the composed track. The anchor
+/// set is the set of vertices the artifact CARRIES: the smoothed-derivative
+/// sign flips `extrema_actions` writes with -- at the writer's own `kr`, not a
+/// width of its own -- plus the event decode's called apexes (`force`, the rows
+/// the writer force-emits). A called apex is by construction a reversal the
+/// smoother does NOT see: at the deploy refractory a stroke runs two rows, and
+/// a 3-row box erases it. Anchoring on the smoothed flips alone therefore left
+/// every fast stroke out twice over -- unregularized among regularized
+/// neighbours, and then carried by whatever its host run did rather than placed
+/// by its own polarity's median.
+///
+/// Each anchor blends toward that median over a `window_s` slice of neighbours.
+/// The shot's own ends are fixed anchors; each run between anchors is then
+/// remapped onto the new endpoint pair. The run's monotone progress -- the
+/// model's integrated-velocity shape -- is rescaled onto the new reach, and
+/// whatever a row does OUTSIDE that progress rides across at its own size
+/// instead of being multiplied by the run's reach ratio, so deepening a stroke
+/// never enlarges a ripple inside it. A clean monotone run has no such part and
+/// remaps exactly as the reach ratio says. `dose <= 0` returns the input
+/// untouched (the identity).
 fn depth_uniformize(
     p: &[f64],
     shot_edges: &[usize],
     times_ms: &[f64],
+    force: &[(usize, i8)],
+    kr: usize,
     prm: &DepthParams,
 ) -> Vec<f64> {
     let dose = prm.dose.clamp(0.0, 1.0);
@@ -1242,18 +1255,29 @@ fn depth_uniformize(
         }
         let seg = &p[lo..hi];
         let n = seg.len();
-        // interior extrema of the smoothed track: (local row, +1 top / -1 bottom)
-        let s = box_same(seg, 3);
+        // the written vertex set as (local row, +1 top / -1 bottom). The called
+        // apexes go in first, so the stable sort below leaves the event
+        // decode's own kind on any row both detectors name.
+        let mut ext: Vec<(usize, i8)> = force
+            .iter()
+            .filter(|&&(r, _)| r > lo && r + 1 < hi)
+            .map(|&(r, k)| (r - lo, k))
+            .collect();
+        // interior extrema of the smoothed track
+        let s = box_same(seg, kr);
         let mut d: Vec<f64> = s.windows(2).map(|w| sign(w[1] - w[0])).collect();
         for v in d.iter_mut() {
             if *v == 0.0 {
                 *v = 1.0;
             }
         }
-        let ext: Vec<(usize, i8)> = (1..d.len())
-            .filter(|&i| d[i] * d[i - 1] < 0.0)
-            .map(|i| (i, if d[i - 1] > 0.0 { 1 } else { -1 }))
-            .collect();
+        ext.extend(
+            (1..d.len())
+                .filter(|&i| d[i] * d[i - 1] < 0.0)
+                .map(|i| (i, if d[i - 1] > 0.0 { 1 } else { -1 })),
+        );
+        ext.sort_by_key(|&(i, _)| i);
+        ext.dedup_by_key(|&mut (i, _)| i);
         if ext.is_empty() {
             continue;
         }
@@ -1294,19 +1318,25 @@ fn depth_uniformize(
             anchors.push((i, seg[i], target[i]));
         }
         anchors.push((n - 1, seg[n - 1], seg[n - 1]));
-        // affine-remap each monotonic run onto its relocated endpoints
+        // remap each run onto its relocated endpoints
         for aw in anchors.windows(2) {
             let (i0, o0, t0) = aw[0];
             let (i1, o1, t1) = aw[1];
             let denom = o1 - o0;
+            // Under `RDP_EPS` the run is thinner than the artifact's own
+            // resolution: there is no shape in it to preserve, and value
+            // progress would quantize into a stair. Ramp on the row index.
+            let by_value = denom.abs() >= RDP_EPS;
             for i in i0..=i1 {
-                let frac = if denom.abs() < 1e-9 {
-                    // flat old run: no shape to preserve, ramp on row index
-                    (i - i0) as f64 / (i1 - i0).max(1) as f64
+                let frac = if by_value {
+                    ((seg[i] - o0) / denom).clamp(0.0, 1.0)
                 } else {
-                    (seg[i] - o0) / denom
+                    (i - i0) as f64 / (i1 - i0).max(1) as f64
                 };
-                out[lo + i] = (t0 + (t1 - t0) * frac).clamp(0.0, 100.0);
+                // what the row does beyond the run's progress: an excursion no
+                // detector called. It travels WITH the run and keeps its size.
+                let off = seg[i] - (o0 + denom * frac);
+                out[lo + i] = (t0 + (t1 - t0) * frac + off).clamp(0.0, 100.0);
             }
         }
     }
@@ -1330,6 +1360,10 @@ pub fn compose(
     // written artifact carries every called vertex (RDP still prunes
     // sub-unit prominence). Empty in cross mode.
     let mut force: Vec<usize> = Vec::new();
+    // the same rows carrying the kind the decode called them, for depth
+    // uniformity: it anchors on the WRITTEN vertex set, and a called apex is a
+    // reversal the smoother cannot find on its own.
+    let mut force_kind: Vec<(usize, i8)> = Vec::new();
 
     let kd = rows_at(DECODE_SMOOTH_S, cfg.fps, true);
     let kr = rows_at(cfg.rev_smooth_s, cfg.fps, true);
@@ -1447,6 +1481,7 @@ pub fn compose(
                 d.push(-(vkinds[*keep.last().unwrap()] as f64));
                 seg_dirs = Some(d);
                 force.extend(cross.iter().map(|&c| lo + c - 1));
+                force_kind.extend(keep.iter().map(|&i| (lo + vrows[i], vkinds[i])));
             }
         }
         // Re-localize each crossing to the reversal-event head's local
@@ -1607,7 +1642,7 @@ pub fn compose(
     // uniformity moves stroke reach, the level lock then pins the dwells --
     // reordering would let uniformity drag a just-parked plateau off its rail.
     let p = if let Some(dp) = &cfg.depth {
-        depth_uniformize(&p, shot_edges, times_ms, dp)
+        depth_uniformize(&p, shot_edges, times_ms, &force_kind, kr, dp)
     } else {
         p
     };
@@ -1831,7 +1866,9 @@ pub fn compose_level_full(
     // replaces detected gaps in whatever carrier is there. Same order as
     // compose (uniformity first, filler last); level has no lock between.
     let p = if let Some(dp) = &cfg.depth {
-        depth_uniformize(&p, shot_edges, times_ms, dp)
+        // the carrier has no event segmentation, so its written vertices ARE
+        // the smoothed flips -- there are no called apexes to add
+        depth_uniformize(&p, shot_edges, times_ms, &[], rows_at(cfg.rev_smooth_s, cfg.fps, true), dp)
     } else {
         p
     };
@@ -2592,7 +2629,8 @@ mod tests {
         // whole knob shares (a bare run's draft is the manifest's)
         let p = vec![50.0, 80.0, 50.0, 30.0, 50.0, 90.0, 50.0];
         let t: Vec<f64> = (0..p.len()).map(|i| i as f64 * 66.67).collect();
-        let out = depth_uniformize(&p, &[0, p.len()], &t, &DepthParams { dose: 0.0, window_s: 10.0 });
+        let out =
+            depth_uniformize(&p, &[0, p.len()], &t, &[], 3, &DepthParams { dose: 0.0, window_s: 10.0 });
         assert_eq!(out, p);
     }
 
@@ -2609,7 +2647,7 @@ mod tests {
         } // rows: peak 80 @4, valley 50 @8, peak 100 @12
         let t: Vec<f64> = (0..p.len()).map(|i| i as f64 * 66.67).collect();
         let n = p.len();
-        let out = depth_uniformize(&p, &[0, n], &t, &DepthParams { dose: 1.0, window_s: 1000.0 });
+        let out = depth_uniformize(&p, &[0, n], &t, &[], 3, &DepthParams { dose: 1.0, window_s: 1000.0 });
         assert!((out[4] - 90.0).abs() < 1e-6, "top1: {out:?}");
         assert!((out[12] - 90.0).abs() < 1e-6, "top2: {out:?}");
         assert!((out[8] - 50.0).abs() < 1e-6, "valley: {out:?}");
@@ -2638,10 +2676,74 @@ mod tests {
         } // peaks at rows 4, 12, 20
         let t: Vec<f64> = (0..p.len()).map(|i| i as f64 * 66.67).collect();
         let n = p.len();
-        let out = depth_uniformize(&p, &[0, n], &t, &DepthParams { dose: 1.0, window_s: 1000.0 });
+        let out = depth_uniformize(&p, &[0, n], &t, &[], 3, &DepthParams { dose: 1.0, window_s: 1000.0 });
         assert!((out[4] - 80.0).abs() < 1e-6, "matched top moved: {out:?}");
         assert!((out[12] - 80.0).abs() < 1e-6, "matched top moved: {out:?}");
         assert!((out[20] - 80.0).abs() < 1e-6, "outlier not aligned: {out:?}");
+    }
+
+    /// A one-row spike is a reversal the 3-row box CANNOT see -- it reaches the
+    /// artifact only because the event decode called it, which at the deploy
+    /// refractory is how most fast strokes get there. Uniformity has to place
+    /// it like any other top, or the passage it evens out leaves exactly those
+    /// strokes at their own reach, standing out against the evened neighbours.
+    #[test]
+    fn a_called_apex_is_regularized_like_the_reversals_around_it() {
+        let mut p = vec![50.0];
+        for (a, b) in [(50.0, 80.0), (80.0, 50.0)] {
+            for j in 1..=4 {
+                p.push(a + (b - a) * j as f64 / 4.0);
+            }
+        } // slow top 80 @4, back to 50 @8
+        p.push(100.0); // @9: the called apex the box erases
+        for (a, b) in [(50.0, 80.0), (80.0, 50.0)] {
+            for j in 1..=4 {
+                p.push(a + (b - a) * j as f64 / 4.0);
+            }
+        } // slow top 80 @13
+        let n = p.len();
+        let t: Vec<f64> = (0..n).map(|i| i as f64 * 33.33).collect();
+        let prm = DepthParams { dose: 1.0, window_s: 1000.0 };
+
+        // undeclared, the spike is invisible: the shot around it evens out and
+        // the one stroke that most needed evening keeps its own reach
+        let blind = depth_uniformize(&p, &[0, n], &t, &[], 3, &prm);
+        assert!((blind[9] - 100.0).abs() < 1e-6, "apex seen without a call: {blind:?}");
+
+        // declared, it joins the top median (80, 80, 100) and comes to it
+        let out = depth_uniformize(&p, &[0, n], &t, &[(9, 1)], 3, &prm);
+        assert!((out[9] - 80.0).abs() < 1e-6, "apex not regularized: {out:?}");
+        assert!((out[4] - 80.0).abs() < 1e-6, "slow top dragged: {out:?}");
+        assert!((out[13] - 80.0).abs() < 1e-6, "slow top dragged: {out:?}");
+    }
+
+    /// Deepening a stroke must not deepen what is inside it. A row that leaves
+    /// the run's own span is an excursion no detector called; scaling it by the
+    /// run's reach ratio is how a 6-unit wobble became a rail at 100, which
+    /// reads as a slam nothing in the model asked for.
+    #[test]
+    fn deepening_a_stroke_does_not_enlarge_the_ripple_inside_it() {
+        // A shallow top (row 4, 58) and a deep one (row 11, 100): the median 79
+        // raises the shallow stroke's 8-unit rise to 29, a reach ratio near
+        // 3.6. Row 3 overshoots that rise by 14 and no detector calls it --
+        // the box stays monotone across it.
+        let p = vec![
+            50.0, 52.0, 54.0, 72.0, 58.0, 60.0, // shallow top @5, ripple @3
+            50.0, 40.0, 30.0, // bottom
+            50.0, 70.0, 100.0, // deep top @11
+            70.0, 50.0,
+        ];
+        let n = p.len();
+        let t: Vec<f64> = (0..n).map(|i| i as f64 * 33.33).collect();
+        let out =
+            depth_uniformize(&p, &[0, n], &t, &[], 3, &DepthParams { dose: 1.0, window_s: 1000.0 });
+        // both tops land on the median
+        assert!((out[4] - 79.0).abs() < 1e-6, "shallow top: {out:?}");
+        assert!((out[11] - 79.0).abs() < 1e-6, "deep top: {out:?}");
+        // the overshoot rides across at its own size above the top it sits in:
+        // 79 + 14. Scaling it by the reach ratio instead asks for 130, which
+        // the clamp turns into a rail at 100 -- a slam out of a 14-unit wobble.
+        assert!((out[3] - 93.0).abs() < 1e-6, "ripple rescaled: {out:?}");
     }
 
     #[test]
