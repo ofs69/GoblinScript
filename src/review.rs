@@ -405,13 +405,20 @@ fn handle(
 /// `presets`), a number when it has been dialled in by hand. Each stands on the
 /// same axis as the preset it replaces, so the box and the dropdown beside it
 /// are two ways of setting one thing.
+///
+/// `env_seed` follows the same `null` rule for the same reason, and one more:
+/// its "whatever the bundle says" sentinel is `u64::MAX`, which a browser
+/// cannot hold -- JSON numbers are doubles there, so the sentinel would come
+/// back rounded UP past `u64::MAX` and every knob the page posts after that
+/// would be rejected. `null` is what the page already means by it, and what
+/// the inbound `Option<u64>` already reads.
 fn params_json(p: &style::Params) -> serde_json::Value {
     serde_json::json!({
         "style": p.style.label(),
         "dwells": p.dwells.label(),
         "stillness": p.stillness.label(),
         "intensity": p.intensity,
-        "env_seed": p.env_seed,
+        "env_seed": (p.env_seed != u64::MAX).then_some(p.env_seed),
         "range": [p.range.0, p.range.1],
         "max_speed": p.max_speed,
         "cut_ease": p.cut_ease,

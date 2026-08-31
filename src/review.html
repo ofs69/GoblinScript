@@ -447,7 +447,7 @@
             </label>
             <label class="fine" for="envSeed" data-t="page.knob.envseed">variation
               <span class="field"><button type="button" class="help" data-h="envSeed">?</button>
-              <input id="envSeed" type="number" min="0" step="1" value="0"></span>
+              <input id="envSeed" type="number" min="0" max="9007199254740991" step="1" value=""></span>
             </label>
             <label for="depth" data-t="page.knob.depth">depth uniformity
               <span class="field"><button type="button" class="help" data-h="depth">?</button>
@@ -902,7 +902,9 @@ function seedControls(p) {
   $('dwellsNum').value = Number(pk).toFixed(2);
   $('stillNum').value = Math.round(se);
   $('intensity').value = p.intensity;
-  $('envSeed').value = p.env_seed;
+  // null = the bundle's own seed; the box is empty and stays empty until a
+  // person puts a number in it
+  $('envSeed').value = p.env_seed ?? '';
   $('ival').textContent = Number(p.intensity).toFixed(1);
   $('rlo').value = p.range[0];
   $('rhi').value = p.range[1];
@@ -1055,7 +1057,7 @@ async function postParams() {
     dwells: $('dwells').value,
     stillness: $('stillness').value,
     intensity: parseFloat($('intensity').value),
-    env_seed: parseInt($('envSeed').value, 10),
+    env_seed: $('envSeed').value === '' ? null : parseInt($('envSeed').value, 10),
     range: [parseFloat($('rlo').value), parseFloat($('rhi').value)],
     max_speed: parseFloat($('mspeed').value),
     cut_ease: $('cutSmooth').value === 'on'
