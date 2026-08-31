@@ -190,8 +190,9 @@ struct Cli {
     /// this speed those points go -- the one before the cut first, then the
     /// one after it if the move is still too fast -- so the move runs between
     /// real changes of direction across the cut, which is what a human writer
-    /// does. Each shot always keeps a point. The stroke keeps its full depth
-    /// and no time moves.
+    /// does. If that move is also too fast, its depth decreases until its
+    /// speed obeys the limit. Each shot always keeps a point. No time moves,
+    /// and no move across a cut is faster than this limit.
     #[arg(long, default_value_t = style::CUT_EASE)]
     cut_ease: f64,
 

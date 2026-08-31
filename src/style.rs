@@ -715,10 +715,11 @@ pub struct Params {
     /// Seam ease at shot cuts, pos-units/s; 0 = off. Styling runs per shot,
     /// so each internal cut carries two vertices about one row apart and the
     /// level change across the cut is asked for in ~33 ms. Above this speed
-    /// the outgoing shot's forced closing vertex is dropped and the move runs
-    /// from that shot's last real reversal instead. Unlike `max_speed`, which
-    /// shortens a stroke to make it playable, this changes only WHEN the move
-    /// starts -- no depth is lost and no time moves.
+    /// the forced boundary vertices are dropped -- the closer first, then the
+    /// opener where the move is still too fast -- so the move runs between
+    /// real reversals across the cut, and `slew_cut_seams` holds whatever
+    /// crossing remains to the same rate by depth. No time moves: this value
+    /// is the ceiling on the written speed across a cut.
     pub cut_ease: f64,
     /// EXPERT override for where the dwell lock's confidence ramp STARTS
     /// (0..1): `Some` uses this raw value in place of whatever `dwells` would
@@ -1950,11 +1951,13 @@ pub struct Action {
 /// per shot, so consecutive shots each force an endpoint and every internal
 /// cut carries two vertices about one row apart -- the level change across
 /// the cut is then asked for in ~33 ms, which is a full-speed device slam.
-/// Above this speed the outgoing shot's closing vertex is dropped, so the
-/// move runs from that shot's last real reversal instead. Artifact-layer
-/// pruning on the same footing as RDP: no reversal is deleted, no time
-/// moves, and `MAX_POS_RATE` still backstops it. Port of
-/// `jepa_infer.ease_cut_seams`.
+/// Above this speed those vertices are dropped -- the closer first, then
+/// the opener if the move is still too fast -- so the move runs between
+/// REAL reversals across the cut, and `slew_cut_seams` then holds whatever
+/// crossing remains to the same rate by depth. Artifact-layer pruning on
+/// the same footing as RDP: no reversal is deleted, no time moves, and
+/// `MAX_POS_RATE` still backstops it. Port of `jepa_infer.ease_cut_seams`
+/// and `jepa_infer.slew_cut_seams`.
 pub fn extrema_actions(
     p: &[f64],
     times_ms: &[f64],
@@ -2026,7 +2029,15 @@ pub fn extrema_actions(
         ease_cut_seams(&mut actions, cut_ease);
     }
     let flat: Vec<Action> = actions.into_iter().map(|s| s.a).collect();
-    rdp(&flat, RDP_EPS)
+    let mut flat = rdp(&flat, RDP_EPS);
+    if cut_ease > 0.0 && shot_edges.len() > 2 {
+        let cuts: Vec<f64> = shot_edges[1..shot_edges.len() - 1]
+            .iter()
+            .map(|&e| times_ms[e])
+            .collect();
+        slew_cut_seams(&mut flat, &cuts, cut_ease, 1000.0 / row_hz);
+    }
+    flat
 }
 
 /// An emitted vertex with the shot that produced it, so the seam ease can
@@ -2038,13 +2049,14 @@ struct Seam {
     opens: bool,
 }
 
-/// Drop each shot-closing vertex whose transition into the next shot is
-/// faster than `limit` pos/s.
+/// Drop the FORCED boundary vertices at each shot cut whose transition is
+/// faster than `limit` pos/s: the outgoing shot's closer first, then the
+/// incoming shot's opener where the surviving move is still too fast, so
+/// the move runs between REAL reversals across the cut.
 ///
-/// A vertex only goes when the outgoing shot keeps an EARLIER vertex of its
-/// own, so no shot is left unrepresented and the move always has a real
-/// reversal to start from. One pass, at most one vertex per cut: the seam it
-/// leaves is longer than the one it removed, so nothing here can compound.
+/// A vertex only goes when its own shot keeps another, so no shot is left
+/// unrepresented. At most one vertex per side per cut: each drop leaves a
+/// longer seam than it removed, so nothing here can compound.
 fn ease_cut_seams(actions: &mut Vec<Seam>, limit: f64) {
     let mut keep = vec![true; actions.len()];
     let fast = |j: usize, k: usize| -> bool {
@@ -2081,6 +2093,53 @@ fn ease_cut_seams(actions: &mut Vec<Seam>, limit: f64) {
     }
     let mut it = keep.iter();
     actions.retain(|_| *it.next().unwrap());
+}
+
+/// The hard ceiling under the ease: no written transition at a shot cut
+/// runs faster than `limit` pos/s. Runs AFTER RDP, on the list that ships,
+/// because the seam neighbourhood is not stable before it: sub-frame
+/// emission can pull the incoming shot's first reversal to the outgoing
+/// side of the cut, and RDP can delete a midpoint and leave a steeper
+/// transition between the survivors -- both relocate a slam the per-vertex
+/// ease already judged clean. What remains around a cut is real reversals,
+/// and where they sit close to it with a large level step between them the
+/// move is still a device slam -- a one-frame slam across a scene change is
+/// never a stroke a scripter writes. Depth truncation toward the
+/// predecessor (the `max_speed` clamp's rule at this limit) walks causally
+/// from the last vertex before each cut's seam neighbourhood until the
+/// seam is behind it and the model's own positions are reachable again:
+/// times never move, no reversal is deleted -- a clamped reversal keeps its
+/// instant and gives up depth, and the level re-anchors at `limit` instead
+/// of instantly. Each cut time is the INCOMING shot's first row time, so
+/// the forced pair spans the row ending there and the neighbourhood runs
+/// two rows back and one forward -- a row of sub-frame slack around the
+/// pair on either side. Port of `jepa_infer.slew_cut_seams`.
+fn slew_cut_seams(actions: &mut [Action], cut_times_ms: &[f64], limit: f64, row_ms: f64) {
+    if actions.len() < 2 {
+        return;
+    }
+    for &c in cut_times_ms {
+        let k0 = actions.partition_point(|a| (a.at as f64) < c - 2.0 * row_ms);
+        let mut j = k0.saturating_sub(1);
+        while j + 1 < actions.len() {
+            let (p0, at0) = (actions[j].pos, actions[j].at);
+            let (p1, at1) = (actions[j + 1].pos, actions[j + 1].at);
+            let dt = at1 - at0;
+            if dt > 0 {
+                let d = p1 - p0;
+                let lim = limit * dt as f64 / 1000.0;
+                if d.abs() as f64 > lim {
+                    // TRUNCATE toward the predecessor -- rounding could
+                    // round UP past the limit (the clamp's own rule)
+                    let step = lim as i64;
+                    actions[j + 1].pos = (p0 + if d > 0 { step } else { -step }).clamp(0, 100);
+                } else if at1 as f64 > c + row_ms {
+                    break; // past the seam and playable
+                }
+            }
+            j += 1;
+        }
+    }
 }
 
 /// Douglas-Peucker epsilon for the written action list, pos units --
@@ -2802,24 +2861,84 @@ mod tests {
     }
 
     #[test]
+    fn the_seam_slew_holds_the_cut_crossing_to_the_limit() {
+        // The ease fixture above never needs the slew (its eased crossing
+        // lands at 29 pos/s). This one is built so BOTH forced vertices
+        // drop and the move between real reversals is STILL over the
+        // limit: the last real reversal 133 ms before the cut, the first
+        // one after 33 ms in, 41 units of level between them. The slew
+        // truncates depth at the limit from the crossing forward. The SAME
+        // fixture runs through `jepa_infer.extrema_actions` in
+        // `grid_check.py`, and both sides pin these literal lists.
+        let mut p = vec![0.0f64; 120];
+        for (i, v) in p.iter_mut().enumerate() {
+            *v = match i {
+                0..=56 => 10.0 + 28.0 * (i as f64) / 56.0,
+                57..=59 => 38.0 - 3.0 * ((i - 57) as f64) / 2.0,
+                60..=63 => 95.0 - 4.0 * ((i - 60) as f64) / 3.0,
+                64..=66 => 91.0 + 6.0 * ((i - 64) as f64) / 2.0,
+                _ => 97.0 - 57.0 * ((i - 67) as f64) / 52.0,
+            };
+        }
+        let t: Vec<f64> = (0..120).map(|i| i as f64 * 1000.0 / 30.0).collect();
+        let off = extrema_actions(&p, &t, &[0, 60, 120], None, 30.0, 0.1, &[], 0.0);
+        let on = extrema_actions(&p, &t, &[0, 60, 120], None, 30.0, 0.1, &[], 250.0);
+        // the leak the slew runs post-RDP for: the incoming dip's sub-frame
+        // time lands on the OUTGOING side of the cut, so the slam sits
+        // between two vertices of ONE shot and only the seam-window walk
+        // can see it
+        let sub: std::collections::HashMap<usize, f64> = [(63usize, 1990.0f64)].into();
+        let moved = extrema_actions(&p, &t, &[0, 60, 120], Some(&sub), 30.0, 0.1, &[], 250.0);
+        let pairs = |a: &[Action]| -> Vec<(i64, i64)> { a.iter().map(|x| (x.at, x.pos)).collect() };
+        assert_eq!(
+            pairs(&off),
+            vec![(0, 10), (1867, 38), (1967, 35), (2000, 95), (2100, 91), (2233, 97), (3967, 40)]
+        );
+        assert_eq!(
+            pairs(&on),
+            vec![(0, 10), (1867, 38), (2033, 79), (2100, 91), (2233, 97), (3967, 40)]
+        );
+        assert_eq!(
+            pairs(&moved),
+            vec![(0, 10), (1867, 38), (2000, 71), (2033, 79), (2233, 97), (3967, 40)]
+        );
+        // the invariant the slew exists for: nothing in the eased lists asks
+        // for more than the limit
+        for a in [&on, &moved] {
+            for w in a.windows(2) {
+                let v = (w[1].pos - w[0].pos).abs() as f64 * 1000.0 / (w[1].at - w[0].at) as f64;
+                assert!(v <= 250.0, "{}ms -> {}ms runs {v:.0} pos/s", w[0].at, w[1].at);
+            }
+        }
+    }
+
+    #[test]
     fn the_cut_ease_never_leaves_a_shot_unrepresented() {
         // Four flat shots at different levels, so EVERY seam is a pure jump
         // and a limit of 1 pos/s asks the ease to fire at all of them. Each
-        // shot must still put a vertex in the written list: dropping a
-        // closing endpoint is allowed, emptying a shot is not.
-        let edges = [0usize, 8, 16, 24, 32];
-        let levels = [10.0, 90.0, 30.0, 70.0];
-        let mut p = vec![0.0f64; 32];
-        for (s, w) in edges.windows(2).enumerate() {
-            p[w[0]..w[1]].fill(levels[s]);
+        // shot must still keep a vertex: dropping a boundary vertex is
+        // allowed, emptying a shot is not. The ease is called directly --
+        // downstream the slew may flatten a pathological limit's ramps into
+        // collinear runs RDP then merges, which changes the vertex COUNT
+        // without changing the written track.
+        let edges = [0i64, 8, 16, 24, 32];
+        let levels = [10i64, 90, 30, 70];
+        let mut seams: Vec<Seam> = Vec::new();
+        for (si, w) in edges.windows(2).enumerate() {
+            for (k, at) in [w[0], w[1] - 1].into_iter().enumerate() {
+                seams.push(Seam {
+                    a: Action { at: at * 33, pos: levels[si] },
+                    shot: si,
+                    closes: k == 1 && si + 1 < levels.len(),
+                    opens: k == 0 && si > 0,
+                });
+            }
         }
-        let t: Vec<f64> = (0..32).map(|i| i as f64 * 1000.0 / 30.0).collect();
-        let acts = extrema_actions(&p, &t, &edges, None, 30.0, 0.1, &[], 1.0);
-        for w in edges.windows(2) {
-            let (lo, hi) = (t[w[0]], t[w[1] - 1]);
+        ease_cut_seams(&mut seams, 1.0);
+        for si in 0..levels.len() {
             assert!(
-                acts.iter().any(|a| a.at as f64 >= lo && a.at as f64 <= hi),
-                "shot {lo}..{hi} ms lost every vertex"
+                seams.iter().any(|s| s.shot == si),
+                "shot {si} lost every vertex"
             );
         }
     }
