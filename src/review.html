@@ -425,9 +425,15 @@
               <span class="field"><button type="button" class="help" data-h="mspeed">?</button>
               <input id="mspeed" type="number" min="0" step="10" value="0"></span>
             </label>
-            <label class="fine" for="cutEase" data-t="page.knob.cutease">cut smoothing <span class="sub" data-t="page.knob.cutease.sub">(0 = off)</span>
+            <label for="cutSmooth" data-t="page.knob.cutsmooth">cut smoothing
+              <span class="field"><button type="button" class="help" data-h="cutSmooth">?</button>
+              <select id="cutSmooth">
+                <option value="on" data-t="page.preset.on">on</option><option value="off" data-t="page.preset.off">off</option>
+              </select></span>
+            </label>
+            <label class="fine" for="cutEase" data-t="page.knob.cutease">seam speed <span class="sub" data-t="page.knob.cutease.sub">(pos/s)</span>
               <span class="field"><button type="button" class="help" data-h="cutEase">?</button>
-              <input id="cutEase" type="number" min="0" step="25" value="0"></span>
+              <input id="cutEase" type="number" min="1" step="25" value="250"></span>
             </label>
           </div>
         </div>
@@ -439,7 +445,7 @@
               <span class="field"><button type="button" class="help" data-h="intensity">?</button>
               <input id="intensity" type="range" min="0.5" max="2" step="0.1" value="1"></span>
             </label>
-            <label for="envSeed" data-t="page.knob.envseed">variation
+            <label class="fine" for="envSeed" data-t="page.knob.envseed">variation
               <span class="field"><button type="button" class="help" data-h="envSeed">?</button>
               <input id="envSeed" type="number" min="0" step="1" value="0"></span>
             </label>
@@ -901,7 +907,8 @@ function seedControls(p) {
   $('rlo').value = p.range[0];
   $('rhi').value = p.range[1];
   $('mspeed').value = p.max_speed;
-  $('cutEase').value = p.cut_ease;
+  $('cutSmooth').value = p.cut_ease > 0 ? 'on' : 'off';
+  if (p.cut_ease > 0) $('cutEase').value = p.cut_ease;
   $('depth').value = p.depth ?? 'off';
   seedDepthKnobs(p.depth ?? 'off', p);
   // filler: the gap is the switch (0 = off), and everything downstream of it
@@ -1051,7 +1058,8 @@ async function postParams() {
     env_seed: parseInt($('envSeed').value, 10),
     range: [parseFloat($('rlo').value), parseFloat($('rhi').value)],
     max_speed: parseFloat($('mspeed').value),
-    cut_ease: parseFloat($('cutEase').value),
+    cut_ease: $('cutSmooth').value === 'on'
+      ? parseFloat($('cutEase').value) : 0,
     // a raw number differing from its preset's value becomes the override; equal
     // (or unchanged) sends null, keeping the clip on the preset
     dwell_ramp: ovNum('dwellsNum', state.presets.dwells[$('dwells').value]),
@@ -1115,7 +1123,7 @@ function updateStylingUI() {
   $('stylingNote').classList.toggle('hidden', !busy);
 }
 // the raw-number knobs + intensity/range restyle on change
-for (const id of ['envSeed', 'intensity', 'rlo', 'rhi', 'mspeed', 'cutEase', 'dwellsNum', 'stillNum',
+for (const id of ['envSeed', 'intensity', 'rlo', 'rhi', 'mspeed', 'cutSmooth', 'cutEase', 'dwellsNum', 'stillNum',
                   'depthDose', 'depthWin', 'fillGap', 'fillRate', 'fillAmp',
                   'fillMinReal', 'fillRealV', 'fillModelW', 'fillRamp', 'fillBridge',
                   'fillSway', 'fillSwayS', 'fillPattern', 'fillBurst',

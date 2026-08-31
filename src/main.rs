@@ -187,9 +187,11 @@ struct Cli {
     /// Smooth the jolt at a shot cut (pos-units/s, 0 = off). Styling runs
     /// per shot, so each cut gets two points about one frame apart and the
     /// device must make the whole level change of the cut in that time. Above
-    /// this speed the first of the two points goes, and the move starts at
-    /// the last change of direction before the cut instead. The stroke keeps
-    /// its full depth and no time moves.
+    /// this speed those points go -- the one before the cut first, then the
+    /// one after it if the move is still too fast -- so the move runs between
+    /// real changes of direction across the cut, which is what a human writer
+    /// does. Each shot always keeps a point. The stroke keeps its full depth
+    /// and no time moves.
     #[arg(long, default_value_t = style::CUT_EASE)]
     cut_ease: f64,
 

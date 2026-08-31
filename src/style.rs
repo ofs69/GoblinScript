@@ -1386,9 +1386,15 @@ pub fn compose(
     } else {
         vec![0.0; t.vmarg.len()]
     };
-    let lv = box_same(&t.level, kd);
+    // The decode's level/rail low-pass, run across the whole clip. Kept
+    // deliberately: taking it INSIDE each shot is the obvious reading of a
+    // cut and it measures worse -- the level head's step at a cut correlates
+    // 0.13 with the scripter's, so the box straddling a seam is low-passing
+    // noise, which is what a low-pass is for.
+    let lp = |x: &[f64]| box_same(x, kd);
+    let lv = lp(&t.level);
     let ev = &t.env;
-    let band = t.band.as_ref().map(|(lo, hi)| (box_same(lo, kd), box_same(hi, kd)));
+    let band = t.band.as_ref().map(|(lo, hi)| (lp(lo), lp(hi)));
     let dk = t
         .plat
         .as_ref()
@@ -1971,6 +1977,8 @@ pub fn extrema_actions(
                 shot: si,
                 // closes a shot that another shot follows
                 closes: i == seg.len() - 1 && hi < last_edge,
+                // opens a shot that another shot precedes
+                opens: i == 0 && lo > 0,
             });
         }
     }
@@ -1990,6 +1998,7 @@ struct Seam {
     a: Action,
     shot: usize,
     closes: bool,
+    opens: bool,
 }
 
 /// Drop each shot-closing vertex whose transition into the next shot is
@@ -2001,20 +2010,36 @@ struct Seam {
 /// leaves is longer than the one it removed, so nothing here can compound.
 fn ease_cut_seams(actions: &mut Vec<Seam>, limit: f64) {
     let mut keep = vec![true; actions.len()];
+    let fast = |j: usize, k: usize| -> bool {
+        let (cur, nxt) = (&actions[j].a, &actions[k].a);
+        let dt = nxt.at - cur.at;
+        dt > 0 && (nxt.pos - cur.pos).abs() as f64 * 1000.0 / dt as f64 > limit
+    };
     for i in 0..actions.len() {
-        if !actions[i].closes || i + 1 >= actions.len() {
+        if !actions[i].closes {
             continue;
         }
+        let k = match (i + 1..actions.len()).find(|&j| keep[j]) {
+            Some(k) => k,
+            None => continue,
+        };
         // the newest surviving predecessor has to be this shot's own
-        let prev = (0..i).rev().find(|&j| keep[j]);
-        match prev {
-            Some(j) if actions[j].shot == actions[i].shot => {}
+        let j = match (0..i).rev().find(|&j| keep[j]) {
+            Some(j) if actions[j].shot == actions[i].shot => j,
             _ => continue,
+        };
+        if !fast(i, k) {
+            continue;
         }
-        let (cur, nxt) = (&actions[i].a, &actions[i + 1].a);
-        let dt = nxt.at - cur.at;
-        if dt > 0 && (nxt.pos - cur.pos).abs() as f64 * 1000.0 / dt as f64 > limit {
-            keep[i] = false;
+        keep[i] = false;
+        // still too fast without it: the incoming shot's opening vertex
+        // goes too, and the move runs to its first real reversal
+        if actions[k].opens && fast(j, k) {
+            if let Some(m) = (k + 1..actions.len()).find(|&j| keep[j]) {
+                if actions[m].shot == actions[k].shot {
+                    keep[k] = false;
+                }
+            }
         }
     }
     let mut it = keep.iter();
@@ -2039,7 +2064,7 @@ pub const MAX_POS_RATE: f64 = 600.0;
 
 /// Default seam ease at shot cuts, pos-units/s -- `jepa_infer.CUT_EASE`,
 /// bound to it by `grid_check`. Artifact layer, like `RDP_EPS`.
-pub const CUT_EASE: f64 = 0.0;
+pub const CUT_EASE: f64 = 250.0;
 
 /// Vertical-deviation Douglas-Peucker over a sorted action list.
 fn rdp(actions: &[Action], eps: f64) -> Vec<Action> {
@@ -2651,7 +2676,7 @@ mod tests {
     }
 
     #[test]
-    fn the_cut_ease_starts_the_seam_move_at_the_last_real_reversal() {
+    fn the_cut_ease_runs_the_seam_move_between_real_reversals() {
         let (p, t) = seam_fixture();
         let off = extrema_actions(&p, &t, &[0, 60, 120], None, 30.0, 0.1, &[], 0.0);
         let on = extrema_actions(&p, &t, &[0, 60, 120], None, 30.0, 0.1, &[], 300.0);
@@ -2663,11 +2688,14 @@ mod tests {
             pairs(&off),
             vec![(0, 20), (1967, 40), (2000, 70), (2967, 70), (3967, 55)]
         );
-        // ON drops it, and the move runs from A's last real reversal: the same
-        // 30 units over 67 ms, 448 pos/s, playable at full depth.
+        // ON drops BOTH forced vertices. Dropping A's closer
+        // alone would leave the move running into B's opener -- 30 units over
+        // 67 ms, still 448 pos/s and still over the limit -- so B's opener
+        // goes too and the move runs to B's first real reversal: 30 units
+        // over 1034 ms, 29 pos/s. Every kept vertex is a real reversal.
         assert_eq!(
             pairs(&on),
-            vec![(0, 20), (1933, 40), (2000, 70), (2967, 70), (3967, 55)]
+            vec![(0, 20), (1933, 40), (2967, 70), (3967, 55)]
         );
     }
 
