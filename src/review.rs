@@ -414,6 +414,7 @@ fn params_json(p: &style::Params) -> serde_json::Value {
         "env_seed": p.env_seed,
         "range": [p.range.0, p.range.1],
         "max_speed": p.max_speed,
+        "cut_ease": p.cut_ease,
         "dwell_ramp": p.dwell_ramp,
         "still_eps": p.still_eps,
         // depth uniformity: the preset label plus its raw EXPERT overrides
@@ -564,6 +565,9 @@ fn parse_params(body: &str) -> Result<(usize, style::Params)> {
         env_seed: Option<u64>,
         range: [f64; 2],
         max_speed: f64,
+        // absent on a page that predates the cut-ease control: keep it off
+        #[serde(default)]
+        cut_ease: Option<f64>,
         // absent or null when the clip is on presets; a number in expert mode
         #[serde(default)]
         dwell_ramp: Option<f64>,
@@ -623,6 +627,9 @@ fn parse_params(body: &str) -> Result<(usize, style::Params)> {
     }
     if m.max_speed < 0.0 {
         anyhow::bail!("max_speed must be >= 0");
+    }
+    if m.cut_ease.is_some_and(|c| c < 0.0) {
+        anyhow::bail!("cut_ease must be >= 0");
     }
     if let Some(pk) = m.dwell_ramp {
         if !(0.0..=1.0).contains(&pk) {
@@ -699,6 +706,7 @@ fn parse_params(body: &str) -> Result<(usize, style::Params)> {
             env_seed: m.env_seed.unwrap_or(u64::MAX),
             range: (lo, hi),
             max_speed: m.max_speed,
+            cut_ease: m.cut_ease.unwrap_or(style::CUT_EASE),
             dwell_ramp: m.dwell_ramp,
             still_eps: m.still_eps,
             depth,

@@ -184,6 +184,15 @@ struct Cli {
     #[arg(long, default_value_t = style::MAX_POS_RATE)]
     max_speed: f64,
 
+    /// Smooth the jolt at a shot cut (pos-units/s, 0 = off). Styling runs
+    /// per shot, so each cut gets two points about one frame apart and the
+    /// device must make the whole level change of the cut in that time. Above
+    /// this speed the first of the two points goes, and the move starts at
+    /// the last change of direction before the cut instead. The stroke keeps
+    /// its full depth and no time moves.
+    #[arg(long, default_value_t = style::CUT_EASE)]
+    cut_ease: f64,
+
     /// Replace passages the model calls motion-free with a background
     /// filler rhythm. off = none; subtle = sparse and gentle (20 s gaps,
     /// 30/min, +-10); steady = the standard rhythm (10 s, 40/min, +-15);
@@ -1132,6 +1141,7 @@ fn style_cfg(man: &bundle::Manifest, p: &style::Params) -> style::StyleCfg {
         filler_pattern: p.filler_pattern,
         filler_burst: p.filler_burst,
         filler_rest_s: p.filler_rest_s,
+        cut_ease: p.cut_ease,
     }
 }
 
@@ -1231,6 +1241,7 @@ fn restyle(
         cfg.fps,
         cfg.rev_smooth_s,
         &force,
+        cfg.cut_ease,
     );
     style::shape_actions(&mut actions, params);
     // Back onto the source clock. A VR prep that trimmed a range drafted a
@@ -2654,6 +2665,9 @@ fn real_main() -> Result<()> {
     if cli.max_speed < 0.0 {
         anyhow::bail!("--max-speed must be >= 0");
     }
+    if cli.cut_ease < 0.0 {
+        anyhow::bail!("--cut-ease must be >= 0");
+    }
     if let Some(pk) = cli.dwell_ramp {
         if !(0.0..=1.0).contains(&pk) {
             anyhow::bail!("--dwell-ramp {pk} is out of range (0.0..1.0)");
@@ -2681,6 +2695,7 @@ fn real_main() -> Result<()> {
         intensity: cli.intensity,
         range: cli.range,
         max_speed: cli.max_speed,
+        cut_ease: cli.cut_ease,
         dwell_ramp: cli.dwell_ramp,
         still_eps: cli.still_eps,
         depth: cli.depth_uniformity,

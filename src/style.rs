@@ -376,6 +376,8 @@ pub struct StyleCfg {
     /// Depth-uniformity numbers (`None` = off, the identity): the resolved
     /// `Params::depth_params()`, applied after the strokes are composed.
     pub depth: Option<DepthParams>,
+    /// Seam ease at shot cuts, pos/s (`extrema_actions`); 0 = off.
+    pub cut_ease: f64,
 }
 
 /// Filler rhythm shape. `Steady` = one continuous triangle; `Burst` =
@@ -710,6 +712,14 @@ pub struct Params {
     /// Cap on position speed between actions, pos-units/s; 0 = off. Defaults
     /// to `MAX_POS_RATE`, the device cap the Python decode always applies.
     pub max_speed: f64,
+    /// Seam ease at shot cuts, pos-units/s; 0 = off. Styling runs per shot,
+    /// so each internal cut carries two vertices about one row apart and the
+    /// level change across the cut is asked for in ~33 ms. Above this speed
+    /// the outgoing shot's forced closing vertex is dropped and the move runs
+    /// from that shot's last real reversal instead. Unlike `max_speed`, which
+    /// shortens a stroke to make it playable, this changes only WHEN the move
+    /// starts -- no depth is lost and no time moves.
+    pub cut_ease: f64,
     /// EXPERT override for where the dwell lock's confidence ramp STARTS
     /// (0..1): `Some` uses this raw value in place of whatever `dwells` would
     /// resolve to. This is the numeric knob behind the review page's expert
@@ -792,6 +802,7 @@ impl Default for Params {
             env_seed: u64::MAX,
             range: (0.0, 100.0),
             max_speed: MAX_POS_RATE,
+            cut_ease: CUT_EASE,
             dwell_ramp: None,
             still_eps: None,
             depth: DepthUniformity::Off,
@@ -890,7 +901,7 @@ pub fn flags_line(p: &Params) -> String {
         format!("--style {} ", p.style.label())
     };
     format!(
-        "{sty}{dwell} {still} --intensity {:.2}{}{}{depth}{filler}",
+        "{sty}{dwell} {still} --intensity {:.2}{}{}{}{depth}{filler}",
         p.intensity,
         if p.range != (0.0, 100.0) {
             format!(" --range {:.0}-{:.0}", p.range.0, p.range.1)
@@ -899,6 +910,11 @@ pub fn flags_line(p: &Params) -> String {
         },
         if p.max_speed > 0.0 {
             format!(" --max-speed {:.0}", p.max_speed)
+        } else {
+            String::new()
+        },
+        if p.cut_ease > 0.0 {
+            format!(" --cut-ease {:.0}", p.cut_ease)
         } else {
             String::new()
         },
@@ -1887,6 +1903,15 @@ pub struct Action {
 /// emitted as vertices even where the smoothed track shows no flip -- the
 /// composed track reverses there by construction, and the smoother would
 /// otherwise erase exactly the fast strokes the call recovered.
+/// `cut_ease` (pos/s, 0 = off) eases the SEAM at a shot cut. Styling runs
+/// per shot, so consecutive shots each force an endpoint and every internal
+/// cut carries two vertices about one row apart -- the level change across
+/// the cut is then asked for in ~33 ms, which is a full-speed device slam.
+/// Above this speed the outgoing shot's closing vertex is dropped, so the
+/// move runs from that shot's last real reversal instead. Artifact-layer
+/// pruning on the same footing as RDP: no reversal is deleted, no time
+/// moves, and `MAX_POS_RATE` still backstops it. Port of
+/// `jepa_infer.ease_cut_seams`.
 pub fn extrema_actions(
     p: &[f64],
     times_ms: &[f64],
@@ -1895,10 +1920,12 @@ pub fn extrema_actions(
     row_hz: f64,
     rev_smooth_s: f64,
     force: &[usize],
+    cut_ease: f64,
 ) -> Vec<Action> {
     let kr = rows_at(rev_smooth_s, row_hz, true);
-    let mut actions: Vec<Action> = Vec::new();
-    for w in shot_edges.windows(2) {
+    let last_edge = shot_edges.last().copied().unwrap_or(0);
+    let mut actions: Vec<Seam> = Vec::new();
+    for (si, w) in shot_edges.windows(2).enumerate() {
         let (lo, hi) = (w[0], w[1]);
         if hi - lo < 2 {
             continue;
@@ -1936,16 +1963,62 @@ pub fn extrema_actions(
                     }
                 }
             }
-            actions.push(Action {
-                at: t.round() as i64,
-                pos: seg[i].clamp(0.0, 100.0).round() as i64,
+            actions.push(Seam {
+                a: Action {
+                    at: t.round() as i64,
+                    pos: seg[i].clamp(0.0, 100.0).round() as i64,
+                },
+                shot: si,
+                // closes a shot that another shot follows
+                closes: i == seg.len() - 1 && hi < last_edge,
             });
         }
     }
-    actions.sort_by_key(|a| a.at);
+    actions.sort_by_key(|s| s.a.at);
     // a cut can put two actions on one millisecond; the first one wins
-    actions.dedup_by_key(|a| a.at);
-    rdp(&actions, RDP_EPS)
+    actions.dedup_by_key(|s| s.a.at);
+    if cut_ease > 0.0 {
+        ease_cut_seams(&mut actions, cut_ease);
+    }
+    let flat: Vec<Action> = actions.into_iter().map(|s| s.a).collect();
+    rdp(&flat, RDP_EPS)
+}
+
+/// An emitted vertex with the shot that produced it, so the seam ease can
+/// tell a shot's forced closing endpoint from a real reversal.
+struct Seam {
+    a: Action,
+    shot: usize,
+    closes: bool,
+}
+
+/// Drop each shot-closing vertex whose transition into the next shot is
+/// faster than `limit` pos/s.
+///
+/// A vertex only goes when the outgoing shot keeps an EARLIER vertex of its
+/// own, so no shot is left unrepresented and the move always has a real
+/// reversal to start from. One pass, at most one vertex per cut: the seam it
+/// leaves is longer than the one it removed, so nothing here can compound.
+fn ease_cut_seams(actions: &mut Vec<Seam>, limit: f64) {
+    let mut keep = vec![true; actions.len()];
+    for i in 0..actions.len() {
+        if !actions[i].closes || i + 1 >= actions.len() {
+            continue;
+        }
+        // the newest surviving predecessor has to be this shot's own
+        let prev = (0..i).rev().find(|&j| keep[j]);
+        match prev {
+            Some(j) if actions[j].shot == actions[i].shot => {}
+            _ => continue,
+        }
+        let (cur, nxt) = (&actions[i].a, &actions[i + 1].a);
+        let dt = nxt.at - cur.at;
+        if dt > 0 && (nxt.pos - cur.pos).abs() as f64 * 1000.0 / dt as f64 > limit {
+            keep[i] = false;
+        }
+    }
+    let mut it = keep.iter();
+    actions.retain(|_| *it.next().unwrap());
 }
 
 /// Douglas-Peucker epsilon for the written action list, pos units --
@@ -1963,6 +2036,10 @@ const RDP_EPS: f64 = 1.0;
 /// at the same place (last, on the emitted actions), which is what makes the
 /// two one decode. `--max-speed 0` is the deliberate opt-out.
 pub const MAX_POS_RATE: f64 = 600.0;
+
+/// Default seam ease at shot cuts, pos-units/s -- `jepa_infer.CUT_EASE`,
+/// bound to it by `grid_check`. Artifact layer, like `RDP_EPS`.
+pub const CUT_EASE: f64 = 0.0;
 
 /// Vertical-deviation Douglas-Peucker over a sorted action list.
 fn rdp(actions: &[Action], eps: f64) -> Vec<Action> {
@@ -2305,6 +2382,7 @@ mod tests {
             filler_burst: 4,
             filler_rest_s: 2.0,
             depth: None,
+            cut_ease: 0.0,
         }
     }
 
@@ -2548,8 +2626,71 @@ mod tests {
         // one thing the product is judged on.)
         let p = [0.0, 50.0, 100.0, 50.0, 0.0];
         let t: Vec<f64> = (0..5).map(|i| i as f64 * 66.67).collect();
-        let acts = extrema_actions(&p, &t, &[0, 5], None, 15.0, 3.0 / 15.0, &[]);
+        let acts = extrema_actions(&p, &t, &[0, 5], None, 15.0, 3.0 / 15.0, &[], 0.0);
         let peak = acts.iter().max_by_key(|a| a.pos).unwrap();
         assert_eq!(peak.at, 133); // row 2, not row 3
+    }
+
+    /// Two shots at 30 rows/s, cut at row 60: shot A rises 20 -> 40 and then
+    /// holds, shot B opens at 70. The SAME fixture runs through
+    /// `jepa_infer.extrema_actions` in `grid_check.py`, and both sides pin
+    /// these literal lists -- which is what makes the seam ease one decode
+    /// rather than two that happen to agree today.
+    fn seam_fixture() -> (Vec<f64>, Vec<f64>) {
+        let mut p = vec![0.0f64; 120];
+        for (i, v) in p.iter_mut().enumerate() {
+            *v = match i {
+                0..=29 => 20.0 + 20.0 * (i as f64) / 29.0,
+                30..=59 => 40.0,
+                60..=89 => 70.0,
+                _ => 70.0 - 15.0 * ((i - 90) as f64) / 29.0,
+            };
+        }
+        let t = (0..120).map(|i| i as f64 * 1000.0 / 30.0).collect();
+        (p, t)
+    }
+
+    #[test]
+    fn the_cut_ease_starts_the_seam_move_at_the_last_real_reversal() {
+        let (p, t) = seam_fixture();
+        let off = extrema_actions(&p, &t, &[0, 60, 120], None, 30.0, 0.1, &[], 0.0);
+        let on = extrema_actions(&p, &t, &[0, 60, 120], None, 30.0, 0.1, &[], 300.0);
+        let pairs = |a: &[Action]| -> Vec<(i64, i64)> { a.iter().map(|x| (x.at, x.pos)).collect() };
+        // OFF keeps shot A's forced closing vertex one row before the cut, so
+        // the 30-unit level change is asked for in 33 ms -- 909 pos/s, which
+        // MAX_POS_RATE then has to pay for in DEPTH, opening shot B short.
+        assert_eq!(
+            pairs(&off),
+            vec![(0, 20), (1967, 40), (2000, 70), (2967, 70), (3967, 55)]
+        );
+        // ON drops it, and the move runs from A's last real reversal: the same
+        // 30 units over 67 ms, 448 pos/s, playable at full depth.
+        assert_eq!(
+            pairs(&on),
+            vec![(0, 20), (1933, 40), (2000, 70), (2967, 70), (3967, 55)]
+        );
+    }
+
+    #[test]
+    fn the_cut_ease_never_leaves_a_shot_unrepresented() {
+        // Four flat shots at different levels, so EVERY seam is a pure jump
+        // and a limit of 1 pos/s asks the ease to fire at all of them. Each
+        // shot must still put a vertex in the written list: dropping a
+        // closing endpoint is allowed, emptying a shot is not.
+        let edges = [0usize, 8, 16, 24, 32];
+        let levels = [10.0, 90.0, 30.0, 70.0];
+        let mut p = vec![0.0f64; 32];
+        for (s, w) in edges.windows(2).enumerate() {
+            p[w[0]..w[1]].fill(levels[s]);
+        }
+        let t: Vec<f64> = (0..32).map(|i| i as f64 * 1000.0 / 30.0).collect();
+        let acts = extrema_actions(&p, &t, &edges, None, 30.0, 0.1, &[], 1.0);
+        for w in edges.windows(2) {
+            let (lo, hi) = (t[w[0]], t[w[1] - 1]);
+            assert!(
+                acts.iter().any(|a| a.at as f64 >= lo && a.at as f64 <= hi),
+                "shot {lo}..{hi} ms lost every vertex"
+            );
+        }
     }
 }
