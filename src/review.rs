@@ -411,6 +411,7 @@ fn params_json(p: &style::Params) -> serde_json::Value {
         "dwells": p.dwells.label(),
         "stillness": p.stillness.label(),
         "intensity": p.intensity,
+        "env_seed": p.env_seed,
         "range": [p.range.0, p.range.1],
         "max_speed": p.max_speed,
         "dwell_ramp": p.dwell_ramp,
@@ -558,6 +559,9 @@ fn parse_params(body: &str) -> Result<(usize, style::Params)> {
         dwells: String,
         stillness: String,
         intensity: f64,
+        // absent on a page that predates the seed control: keep the clip's own
+        #[serde(default)]
+        env_seed: Option<u64>,
         range: [f64; 2],
         max_speed: f64,
         // absent or null when the clip is on presets; a number in expert mode
@@ -692,6 +696,7 @@ fn parse_params(body: &str) -> Result<(usize, style::Params)> {
             dwells,
             stillness,
             intensity: m.intensity,
+            env_seed: m.env_seed.unwrap_or(u64::MAX),
             range: (lo, hi),
             max_speed: m.max_speed,
             dwell_ramp: m.dwell_ramp,

@@ -694,6 +694,17 @@ pub struct Params {
     pub stillness: Stillness,
     /// Stroke amplitude scale about mid-range; 1.0 = the model's own.
     pub intensity: f64,
+    /// The AUTHORSHIP seed: which sample the generative envelope draws.
+    ///
+    /// It is not a styling knob and it does not reach the styler -- it feeds
+    /// the envelope graph, upstream of everything else here. It travels with
+    /// the other choices because this struct is what the page sends and what
+    /// a settings file remembers, and because it IS a choice about the
+    /// output; the draft loop notices when it moves and re-runs the head
+    /// stage before styling. `u64::MAX` means "whatever the bundle says",
+    /// so a settings file written before the seed existed keeps the
+    /// bundle's own.
+    pub env_seed: u64,
     /// The 0..100 track is mapped linearly onto this span (device limits).
     pub range: (f64, f64),
     /// Cap on position speed between actions, pos-units/s; 0 = off. Defaults
@@ -778,6 +789,7 @@ impl Default for Params {
             dwells: Dwells::Normal,
             stillness: Stillness::Normal,
             intensity: 1.0,
+            env_seed: u64::MAX,
             range: (0.0, 100.0),
             max_speed: MAX_POS_RATE,
             dwell_ramp: None,

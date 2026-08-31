@@ -1,67 +1,53 @@
 {
   "language.name": "English",
-
   "common.on": "on",
   "common.off": "off",
-
   "app.tagline": "made by real goblins",
   "picker.intro.anykey": "press any key",
-
   "theme.phosphor": "phosphor",
   "theme.amber": "amber",
   "theme.cga": "cga",
   "theme.mono": "mono",
-
   "audio.music": "music",
   "audio.blips": "blips",
   "audio.silent": "silent",
-
   "volume.quiet": "quiet",
   "volume.normal": "normal",
   "volume.loud": "loud",
-
   "viewport.vision": "goblin vision",
   "viewport.film": "the film",
   "viewport.src.attention": "attention",
   "viewport.src.bands": "bands",
-
   "script.kind.ai": "ai",
   "script.kind.hand": "hand",
   "script.kind.unknown": "?",
-
   "console.link.into": "fetching into {dir}",
   "console.vr.noterminal": "{n} video(s) look like VR, but there is no terminal to ask in -- drafting them as flat video. Pass --vr to aim them, or --no-vr to silence this.",
   "console.vr.ask": "{n} video(s) look like VR. Aim them in the browser first? [Y/n] ",
   "console.vr.asis": "drafting them as-is -- a VR source will come out nonsense",
   "console.vr.hint": "(aim each clip, then press Done there -- or Enter here)",
-
   "console.skip": "scripted [{kind}], skipped ({name} exists; --force overwrites)",
   "console.ofvideo": "of video",
   "console.keys": "M audio   V volume   N next track   T theme   Ctrl-C stop",
   "console.idle": "the goblins are hard at work...",
   "console.nomidi": "(no MIDI synthesizer available -- the goblins will work in silence)",
-
   "console.stage.normalize": "normalize",
   "console.stage.exposure": "exposure",
   "console.stage.cuts": "shot cuts",
   "console.stage.autocrop": "auto-crop",
   "console.stage.cropedit": "crop check",
   "console.stage.encode": "encode",
-
   "console.norm.notranscode": "skipped (--no-transcode)",
   "console.norm.ready": "ready (ran during the last video)",
   "console.norm.headstart": "head start, {left} left to run ({rate}x realtime)",
   "console.norm.reused": "reused",
   "console.norm.done": "done at {height}p ({took}, {rate}x realtime)",
   "console.norm.aspect": "this video is {a}:1. Most of the videos the goblins learned from are 16:9. They see each video compressed into a square, so a different shape reaches them stretched. This can be the cause of a weak script.",
-
   "console.expo.inband": "median luma {luma} -- corpus-ordinary, untouched",
   "console.expo.gamma": "median luma {luma} is outside the corpus band -> gamma {gamma}",
-
   "console.cuts.loading": "loading the cut detector...",
   "console.cuts.reused": "reused ({n})",
   "console.cuts.done": "{n} ({took}, {rate}x realtime)",
-
   "console.crop.loading": "loading the goblin early...",
   "console.crop.nomask": "skipped -- this bundle carries no mask net",
   "console.crop.reused": " (reused)",
@@ -70,20 +56,16 @@
   "console.crop.rects": "{n} rects{placed}, median x{zoom}, esc {esc}%{tag}",
   "console.crop.timed": "{what} ({took})",
   "console.crop.hand": " (you drew this)",
-
   "console.cropedit.label": "crop page",
   "console.cropedit.hint": "drag the rect, then click the green button",
   "console.cropedit.waiting": "the page is open in your browser. It waits for you. If you closed it, open the address again.",
   "console.cropedit.kept": "you kept the rects the goblins picked",
-
   "console.encode.loading": "loading the goblin...",
   "console.encode.reused": "reused latents ({took}, {rate}x realtime)",
   "console.encode.done": "done ({took}, {rate}x realtime)",
-
   "console.conf": ", conf {v}",
   "console.rare": ", rare spans {n} ({rate}/min, authors {authors})",
   "console.wrote": "({n} actions{notes}, done in {took}, {rate}x realtime)",
-
   "console.failed": "failed: {err}",
   "console.failed.kept": "(working files kept -- running this video again resumes)",
   "console.failed.log": "the details are in {path}",
@@ -91,11 +73,9 @@
   "console.sum.drafted": "{n} drafted",
   "console.sum.skipped": "{n} skipped",
   "console.sum.failed": "{n} failed",
-
   "console.review.label": "review:",
   "console.review.hint": "(opened in your browser -- press Done there, or Enter here, to finish)",
   "console.review.fallback": "browser review unavailable ({err}); using the terminal screen",
-
   "picker.den": "goblin den: ",
   "picker.drives": "drives",
   "picker.filter": "filter: {q}",
@@ -123,16 +103,13 @@
   "picker.errors.act.scroll": "scroll",
   "picker.errors.act.log": "open the log",
   "picker.errors.act.close": "back to the picker",
-
   "picker.toggle.overwrite": "overwrite existing",
   "picker.toggle.cropedit": "crop check",
   "picker.toggle.autocrop": "auto-crop",
-
   "picker.chrome.theme": " theme: ",
   "picker.chrome.audio": " audio: ",
   "picker.chrome.volume": " volume: ",
   "picker.chrome.next": " next track",
-
   "key.updown": "up/down",
   "key.enter": "Enter",
   "key.esc": "Esc",
@@ -142,7 +119,6 @@
   "key.type": "type",
   "key.pasteortype": "paste or type",
   "key.enterq": "Enter/Q",
-
   "picker.act.move": "move",
   "picker.act.open": "open",
   "picker.act.select": "select",
@@ -165,7 +141,6 @@
   "picker.act.fetch": "fetch",
   "picker.act.cancel": "cancel",
   "picker.act.delete": "delete",
-
   "picker.link.prompt": "  paste a link: ",
   "picker.link.hint": "   Enter fetch   Esc cancel",
   "picker.dl.notalink": "that is not an http:// or https:// link",
@@ -178,7 +153,6 @@
   "picker.dl.thevideo": "the video",
   "picker.dl.stopping": "stopping that fetch...",
   "picker.dl.stillcoming": "a link is still coming down -- Esc stops it",
-
   "review.tui.title": "  review ",
   "review.tui.subtitle": "-- the goblins have written the scripts; each script has its own style",
   "review.tui.actions": "  ({n} actions)",
@@ -190,7 +164,6 @@
   "review.tui.act.pick": "pick a script",
   "review.tui.act.restyle": "restyle it",
   "review.tui.act.back": "back to the picker (the goblins keep these)",
-
   "page.title": "GoblinScript review",
   "page.review": "review",
   "page.tagline": "made by real goblins",
@@ -215,7 +188,6 @@
   "page.conf.unknown": "confidence –",
   "page.crop.whole": "whole frame",
   "page.crop.reading": "×{zoom} · {n} of {total} shots · esc {esc}%",
-
   "cpage.title": "crop",
   "cpage.count": "{hand} of {n} shots drawn by you",
   "cpage.prev": "shot before",
@@ -247,7 +219,6 @@
   "page.done.confirm": "click again to finish",
   "page.closed": "Review closed — the goblins are done; the scripts are final.",
   "page.closed.tab": "You can close this tab.",
-
   "page.group.script": "script",
   "page.group.script.hint": "what gets written, and device limits",
   "page.group.strokes": "strokes",
@@ -258,7 +229,6 @@
   "page.group.stillness.hint": "quiet passages hold flat instead of jittering",
   "page.group.filler": "gap filler",
   "page.group.filler.hint": "replace motion-free passages with a rhythm",
-
   "page.knob.style": "style",
   "page.knob.range": "range",
   "page.knob.range.sub": "lo–hi",
@@ -288,12 +258,10 @@
   "page.knob.pattern": "pattern",
   "page.knob.burst": "burst",
   "page.knob.burst.sub": "strokes · rest s",
-
   "page.style.composed": "composed — full decode",
   "page.style.level": "level — steady & simple",
   "page.stylehint.level": "strokes ride the predicted level: steadier speed, less reach",
   "page.stylehint.composed": "the full decode: reach, holds, stillness handling, fast events",
-
   "page.preset.off": "off",
   "page.preset.subtle": "subtle",
   "page.preset.even": "even",
@@ -307,7 +275,6 @@
   "page.preset.bursts": "bursts",
   "page.preset.burst": "burst",
   "page.preset.custom": "custom",
-
   "page.help.style.title": "style",
   "page.help.style.body": "composed writes the full production decode: stroke level from the level head, amplitude from the envelope, endpoints stretched to the band rails, holds parked by the dwell head, fast reversals from the event head.\n\nlevel writes strokes riding the predicted level with the model's own travel: steadier speed and a simpler look, but less reach and no hold parking.\n\nHolds and stillness apply to composed only; strokes, gap filler and device limits apply to both.",
   "page.help.range.title": "range",
@@ -379,7 +346,6 @@
   "vr.aim.unsaved": "— UNSAVED (release to save, Esc to revert)",
   "vr.pastedge": "⚠ {pct}% past the lens edge (smeared in the draft)",
   "vr.help": "drag view = aim · click/drag panorama = aim · the aim saves when you release, and is ONE direction for the whole draft · filmstrip cell = seek there · B loop 2s of motion at the cursor · V flip to the ffmpeg v360 reference · F refresh filmstrip · left/right arrows ±0.5s (shift ±5s) · up/down arrows prev/next clip · I/O draft range in/out · U clear range · K not VR · Esc revert to the saved aim · Ctrl+Z undo aim/range edits (physical key positions, layout-independent)",
-
   "vr.st.loadingclip": "loading clip {n}...",
   "vr.st.clipfailed": "clip: {why}",
   "vr.st.failed": "failed",
@@ -405,7 +371,9 @@
   "vr.st.rangeorder": "range: in must precede out",
   "vr.st.nothingtoundo": "nothing to undo",
   "vr.st.undone": "undone",
-
   "page.help.cropShow.title": "crop",
-  "page.help.cropShow.body": "This draft was cropped: instead of the whole frame, the goblins were shown one rect per shot, picked from where their attention actually sits. (It happens by default; --no-autocrop, or the picker's C, drafts the whole frame — and a clip whose attention wants the whole frame is left alone anyway, which is why this readout is not always here.) The overlay draws that rect on the frame and dims the rest, so you can see what they were looking at; C toggles it.\n\nThe reading next to it: the zoom the crop gained, how many shots were cropped, and esc — the share of sampled moments whose attention wandered outside its own rect, which is the number that says a crop was too tight.\n\nCropped shots also draw as the green band on the timeline, one span per shot.\n\nThe rect can also be yours: the crop page that opens before a draft lets you drag it onto the action, and what you drew there is what this overlay shows."
+  "page.help.cropShow.body": "This draft was cropped: instead of the whole frame, the goblins were shown one rect per shot, picked from where their attention actually sits. (It happens by default; --no-autocrop, or the picker's C, drafts the whole frame — and a clip whose attention wants the whole frame is left alone anyway, which is why this readout is not always here.) The overlay draws that rect on the frame and dims the rest, so you can see what they were looking at; C toggles it.\n\nThe reading next to it: the zoom the crop gained, how many shots were cropped, and esc — the share of sampled moments whose attention wandered outside its own rect, which is the number that says a crop was too tight.\n\nCropped shots also draw as the green band on the timeline, one span per shot.\n\nThe rect can also be yours: the crop page that opens before a draft lets you drag it onto the action, and what you drew there is what this overlay shows.",
+  "page.knob.envseed": "variation",
+  "page.help.envSeed.title": "variation",
+  "page.help.envSeed.body": "The goblins select how deep each stroke goes. A different number makes them select differently, and gives a small variation of the same script. On one video, depths moved by 1 of 100 on average and 99% of the changes of direction stayed at the same time. Each number gives the same result every time. This takes longer than the other controls: the goblins must read the video again."
 }

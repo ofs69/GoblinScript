@@ -125,6 +125,14 @@ struct Cli {
     #[arg(long, value_enum, default_value_t = style::Stillness::Normal)]
     stillness: style::Stillness,
 
+    /// Make a small variation of the same script. The goblins select how deep
+    /// each stroke goes, and a different seed makes them select differently.
+    /// The change is small: on one video, stroke depths moved by 1 of 100 on
+    /// average, and 99% of the changes of direction stayed at the same time.
+    /// Each seed gives the same result every time you use it.
+    #[arg(long, value_name = "N")]
+    env_seed: Option<u64>,
+
     /// EXPERT: where the dwell lock's confidence ramp starts, as a raw
     /// number (0..1), overriding --dwells. This is the numeric knob behind the
     /// review page's expert mode.
@@ -1029,6 +1037,10 @@ struct DraftOut {
     norm: Option<PathBuf>,
     dst: PathBuf,
     tracks: style::Tracks,
+    /// The authorship seed `tracks` were decoded at. A review that moves the
+    /// seed has to re-run the head stage -- styling cannot reach the
+    /// envelope -- and this is what says whether it must.
+    tracks_seed: u64,
     shot_edges: Vec<usize>,
     times: Vec<f64>,
     cache_dir: PathBuf,
@@ -1157,6 +1169,41 @@ struct FunMeta {
 /// so the review loop can rewrite on every keypress. Returns the action
 /// count plus the artifact-rarity spans/rate (artifacts.rs) of the
 /// written list, for the batch summary readout.
+/// Re-decode the envelope at a new authorship seed, from the latents the
+/// draft left behind.
+///
+/// The seed feeds `env_step`, which is the HEAD stage, so a restyle cannot
+/// reach it -- the tracks themselves have to be made again. Everything the
+/// re-run needs is already held: the latents sit in the draft's own cache
+/// until the review is finished, and the interior shot edges ARE the cut
+/// rows the flag channel was built from. Seconds to a minute per clip
+/// against milliseconds for a restyle, which is why the page treats it as
+/// work rather than as a knob.
+fn reseed(d: &mut DraftOut, b: &Bundle, man: &bundle::Manifest, seed: u64) -> Result<()> {
+    if d.tracks_seed == seed {
+        return Ok(());
+    }
+    let mut man = man.clone();
+    man.env_seed = seed;
+    let head = b.head_session()?;
+    let env = b
+        .env_session()?
+        .context("this bundle has no envelope graph -- composed styling needs one")?;
+    let n = d.shot_edges.last().copied().unwrap_or(0);
+    let cut_rows: Vec<usize> = d.shot_edges[1..d.shot_edges.len().saturating_sub(1)].to_vec();
+    let mut heads = heads::Heads::new(head, env, &man, cut_rows);
+    let lat = encode::Latents {
+        path: d.cache_dir.join("latents.i8"),
+        rows: n,
+        row_bytes: man.dim * man.grid * man.grid,
+    };
+    let pb = indicatif::ProgressBar::hidden();
+    heads::stream_cache(&lat, &mut heads, None, &man, &pb)?;
+    d.tracks = heads.finish(n, &d.shot_edges)?;
+    d.tracks_seed = seed;
+    Ok(())
+}
+
 fn restyle(
     d: &DraftOut,
     man: &bundle::Manifest,
@@ -2085,6 +2132,7 @@ fn draft(
         norm: (!cli.no_transcode).then(|| norm.clone()),
         dst,
         tracks,
+        tracks_seed: man.env_seed,
         shot_edges,
         times,
         cache_dir: cache.dir.clone(),
@@ -2149,6 +2197,22 @@ fn draft(
 /// CPU kernel for that layout, and the failure would otherwise land deep in the
 /// encode stage as "Packed QKV of shape (B, L, N, 3, H) not implemented for
 /// CPU". Refuse before the startup report claims a CPU chain that will not run.
+/// The authorship seed the run decodes with: the CLI's, or the bundle's own.
+///
+/// The seed is not a quality knob. The flow envelope SAMPLES a stroke depth
+/// rather than publishing the average of the depths it thinks are plausible,
+/// and the seed picks which sample -- so a different one is a different valid
+/// reading of the same video, at the same reversal times. It reaches the
+/// envelope through the manifest because that is the one place both this
+/// decoder and the training pipeline read it from, and it is a no-op on a
+/// bundle whose envelope publishes a mean (`env_flow` false).
+fn with_env_seed(mut b: Bundle, seed: Option<u64>) -> Bundle {
+    if let Some(s) = seed {
+        b.manifest.env_seed = s;
+    }
+    b
+}
+
 fn check_cpu_runnable(man: &bundle::Manifest) -> Result<()> {
     if bundle::force_cpu() && man.attn == "packed" {
         anyhow::bail!(
@@ -2742,6 +2806,7 @@ fn real_main() -> Result<()> {
             .join()
             .map_err(|_| anyhow::anyhow!("the bundle-loading goblin panicked"))??;
         check_cpu_runnable(&b.manifest)?;
+        let b = with_env_seed(b, cli.env_seed);
         if let Some(p) = &post {
             bios::devices(p, &b.manifest);
             bios::ready(p);
@@ -2751,6 +2816,7 @@ fn real_main() -> Result<()> {
     } else {
         let b = load_bundle(cli.bundle.as_deref())?;
         check_cpu_runnable(&b.manifest)?;
+        let b = with_env_seed(b, cli.env_seed);
         if !cli.quiet {
             // no animation here: this user is driving a tool, not booting a
             // machine, and the report is a header rather than a ceremony
@@ -3009,9 +3075,21 @@ fn real_main() -> Result<()> {
                 dwell_ramp: man.plat_soft[0],
                 still_eps: man.still_eps,
             };
+            // the seed reaches the ENVELOPE, upstream of styling, so a clip
+            // whose seed moved is re-decoded from its own latents before it is
+            // styled. `reseed` is a no-op when the seed has not moved, which
+            // is every turn of every other knob.
+            let man_own = man.clone();
+            // a Mutex rather than a RefCell: the styler runs on its own
+            // thread, so the closure has to be Send
+            let outs_cell = std::sync::Mutex::new(&mut outs);
             if let Err(e) =
                 review::review(&clips, &mut clip_params, presets, !cli.no_browser, |i, p| {
-                    restyle(&outs[i], man, p).map(|(n, _, _)| n)
+                    let mut outs = outs_cell.lock().unwrap();
+                    if p.env_seed != u64::MAX {
+                        reseed(&mut outs[i], &b, &man_own, p.env_seed)?;
+                    }
+                    restyle(&outs[i], &man_own, p).map(|(n, _, _)| n)
                 })
             {
                 // no server, no browser -- the terminal review screen still works
