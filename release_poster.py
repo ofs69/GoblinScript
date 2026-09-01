@@ -10,9 +10,10 @@ carry: how close the script is to the person's, and how much movement it puts
 there that the person did not. ONE mechanism sets them together: a version
 that creates more
 movement follows the action better AND makes more movement the person never
-made. The three stand against the person's own count -- Version 0.1.0 far
-short of it, the two newer versions past it -- which is a reading no single
-"better" or "worse" label can hold, and the whole reason the sections exist.
+made. The three bracket the person's own count -- Version 0.1.0 far short of
+it, Version 0.3.0 past it, Version 0.4.0 between the two -- which is a reading
+no single "better" or "worse" label can hold, and the whole reason the
+sections exist.
 
 Each row is a quantity a reader already has a feel for -- a percentage of
 correct timing, a count per minute, a number of minutes -- so nothing on the
@@ -105,34 +106,32 @@ SECTIONS = [
     ("HOW CLOSE TO THE PERSON'S SCRIPT", BRIGHT, WAVE,
      "A longer bar is better on all three rows.", [
         ("How well the script follows the action",
-         None, [0.793, 0.823, 0.833], "{:.3f}", 2,
+         None, [0.793, 0.823, 0.823], "{:.3f}", None,
          "1.000 is a perfect match with the person's script. Version 0.4.0 "
-         "is the nearest of the three."),
+         "and Version 0.3.0 are equal here."),
         ("How well the script follows the action, on difficult videos",
-         None, [0.716, 0.787, 0.793], "{:.3f}", 2,
+         None, [0.716, 0.787, 0.787], "{:.3f}", None,
          "The two most difficult videos of the eleven. Every version is "
-         "further behind here, and Version 0.1.0 the furthest. Version "
-         "0.4.0 is ahead here too."),
+         "further behind here, and Version 0.1.0 the furthest. The two "
+         "newer versions are equal."),
         ("Changes of direction at the correct time",
-         None, [83.8, 88.1, 87.9], "{:.1f}%", 1,
+         None, [83.8, 88.1, 87.0], "{:.1f}%", 1,
          "Correct to 1/15 second. The two newer versions are close here."),
     ]),
     ("MOVEMENT THAT IS NOT IN THE PERSON'S SCRIPT", WARN, SQUINT,
      "Longer is worse. A white line marks the person's own count.", [
         ("Changes of direction that the person did not make",
-         None, [28.3, 34.3, 34.9], "{:.1f}%", 0,
+         None, [28.3, 34.3, 33.8], "{:.1f}%", 0,
          "A version that creates more movements finds more of the person's "
          "movements, and also makes more that the person did not."),
         ("Fast movements in each minute",
-         22.5, [4.5, 33.8, 34.3], "{:.1f}", None,
+         22.5, [4.5, 33.8, 29.8], "{:.1f}", None,
          "Version 0.1.0 creates far fewer than the person. The two newer "
-         "versions create more than the person, and they are close to each "
-         "other."),
+         "versions create more, and Version 0.4.0 is the nearer of them."),
         ("Sudden fast movements where the video is slow, in each minute",
-         0.5, [7.3, 14.3, 17.2], "{:.1f}", None,
-         "The person creates almost none. Every version creates too many, "
-         "and Version 0.4.0 the most: it creates the most movement overall, "
-         "and these two rows move together."),
+         0.5, [7.3, 14.3, 11.0], "{:.1f}", None,
+         "The person creates almost none. Every version creates too many. "
+         "Version 0.4.0 creates 23% fewer than Version 0.3.0."),
     ]),
 ]
 
@@ -148,11 +147,11 @@ NOTE_COLS, NOTE_LEAD = 72, 0.26
 # above and the page says so in one line rather than dressing tuning up as
 # a feature list.
 WHATS_NEW = (
-    "The goblins learned from more videos, and they follow the action more "
-    "closely than before.\n"
-    "Movement at a shot cut is smooth now. Before, a cut could ask for a "
-    "large move in one frame.\n"
-    "A new seed option makes a small variation of the same script."
+    "The goblins learned on more videos, and they look further ahead in "
+    "one.\n"
+    "They also select how deep each stroke goes. Before, they used the "
+    "average depth.\n"
+    "This makes fewer sudden fast movements in the slow parts of a video."
 )
 
 
