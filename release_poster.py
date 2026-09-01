@@ -37,10 +37,10 @@ internal artifact: no clip IDs, no host hardware, no metric names. The goblin
 is `src/mascot.rs`'s own, poses and faces from its own list, so the poster is
 drawn by the same hand as the app.
 
-Numbers come from probes/draft_vs_script_pos.py, probes/draft_vs_script_ms.py
-and artifact_speed.py. They are written down here
-rather than recomputed, so the poster renders in seconds and the values on it
-are exactly the ones quoted in the run.
+Numbers come from probes/poster_read.py, which scores a bench directory of
+written drafts through scoring.py on the poster's own population. They are
+written down here rather than recomputed, so the poster renders in seconds
+and the values on it are exactly the ones quoted in the run.
 
 The first four rows are read where the person WROTE a script. A video the
 person left unscripted for three minutes has no answer there to compare a
