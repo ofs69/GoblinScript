@@ -110,10 +110,10 @@ SECTIONS = [
          "1.000 is a perfect match with the person's script. Version 0.4.0 "
          "and Version 0.3.0 are equal here."),
         ("How well the script follows the action, on difficult videos",
-         None, [0.716, 0.787, 0.787], "{:.3f}", None,
+         None, [0.716, 0.787, 0.786], "{:.3f}", None,
          "The two most difficult videos of the eleven. Every version is "
-         "further behind here, and Version 0.1.0 the furthest. The two "
-         "newer versions are equal."),
+         "further behind here, and Version 0.1.0 the furthest. Version "
+         "0.3.0 is 0.001 higher than Version 0.4.0."),
         ("Changes of direction at the correct time",
          None, [83.8, 88.1, 87.0], "{:.1f}%", 1,
          "Correct to 1/15 second. The two newer versions are close here."),
@@ -121,17 +121,17 @@ SECTIONS = [
     ("MOVEMENT THAT IS NOT IN THE PERSON'S SCRIPT", WARN, SQUINT,
      "Longer is worse. A white line marks the person's own count.", [
         ("Changes of direction that the person did not make",
-         None, [28.3, 34.3, 33.8], "{:.1f}%", 0,
+         None, [28.3, 34.3, 33.7], "{:.1f}%", 0,
          "A version that creates more movements finds more of the person's "
          "movements, and also makes more that the person did not."),
         ("Fast movements in each minute",
-         22.5, [4.5, 33.8, 29.8], "{:.1f}", None,
+         22.5, [4.5, 33.8, 29.5], "{:.1f}", None,
          "Version 0.1.0 creates far fewer than the person. The two newer "
          "versions create more, and Version 0.4.0 is the nearer of them."),
         ("Sudden fast movements where the video is slow, in each minute",
-         0.5, [7.3, 14.3, 11.0], "{:.1f}", None,
+         0.5, [7.3, 14.3, 10.7], "{:.1f}", None,
          "The person creates almost none. Every version creates too many. "
-         "Version 0.4.0 creates 23% fewer than Version 0.3.0."),
+         "Version 0.4.0 creates 25% fewer than Version 0.3.0."),
     ]),
 ]
 
@@ -142,16 +142,20 @@ GUTTER, TRACK = 0.235, 0.50
 # the lines it took, so a longer note costs height and never a lost sentence.
 NOTE_COLS, NOTE_LEAD = 72, 0.26
 
-# What the newest version changed. It adds no command and no button: the
-# goblins learned the same job better, so the whole of it is on the bars
-# above and the page says so in one line rather than dressing tuning up as
-# a feature list.
+# What the newest version changed, and only what the bars above already
+# measured: the model the goblins draft with, and the move they write across
+# a shot cut. Both are on by default, so both are in every column this page
+# scores. An option a reader must switch on belongs in the release notes,
+# where a page of bars would only dress it up as a measured gain.
 WHATS_NEW = (
     "The goblins learned on more videos, and they look further ahead in "
     "one.\n"
     "They also select how deep each stroke goes. Before, they used the "
     "average depth.\n"
-    "This makes fewer sudden fast movements in the slow parts of a video."
+    "Movement at a shot cut is smooth now. Before, a cut could ask the "
+    "device for a large move.\n"
+    "Together these make fewer sudden fast movements in the slow parts of "
+    "a video."
 )
 
 
@@ -274,7 +278,11 @@ def main():
     y -= 0.95
     ax.text(0.012, y, WHATS_NEW, color=INK, fontsize=9.6, family=MONO,
             va="top", ha="left", linespacing=1.6)
-    y -= 1.35
+    # the block grows downward by the lines it took, the way a bar row's note
+    # does, so a sentence added here costs page height and never the divider.
+    # A line of this size and leading stands 0.53 units tall and the gap below
+    # carries 0.30 of the last one.
+    y -= 0.55 * (WHATS_NEW.count("\n") + 1) - 0.30
 
     y -= 0.30
     ax.plot([0, 1], [y, y], color=DIM, lw=1.1)
