@@ -11,7 +11,7 @@ there that the person did not. ONE mechanism sets them together: a version
 that creates more
 movement follows the action better AND makes more movement the person never
 made. The three bracket the person's own count -- Version 0.1.0 far short of
-it, Version 0.3.0 past it, Version 0.4.0 between the two -- which is a reading
+it, Version 0.4.0 past it, Version 0.5.0 nearer to it from above -- a reading
 no single "better" or "worse" label can hold, and the whole reason the
 sections exist.
 
@@ -49,7 +49,7 @@ one convention covers all three versions: the page compares versions and never
 conventions. The last two rows read written speed alone and take the person's
 line from the script's own actions, so they never needed the distinction.
 
-    python goblinscript/release_poster.py --out infer_out/release_v040
+    python goblinscript/release_poster.py --out infer_out/release_v050
 """
 import argparse
 import textwrap
@@ -76,9 +76,9 @@ WHITE = "#ffffff"      # accent 231
 # on black, and every bar is named in the gutter anyway, so identity never
 # rests on colour.
 VERSIONS = [("Version 0.1.0", DIM),
-            ("Version 0.3.0", WARN),
-            ("Version 0.4.0", BRIGHT)]
-NEW_VER = "Version 0.4.0"
+            ("Version 0.4.0", WARN),
+            ("Version 0.5.0", BRIGHT)]
+NEW_VER = "Version 0.5.0"
 
 MONO = ["DejaVu Sans Mono", "Consolas", "monospace"]
 
@@ -97,7 +97,7 @@ def march(pose, n, gap=3):
 
 
 # --- the measurements -------------------------------------------------------
-# (label, person, [v0.1.0, v0.3.0, v0.4.0], fmt, lead, note)
+# (label, person, [v0.1.0, v0.4.0, v0.5.0], fmt, lead, note)
 # `person` is the human script's own value, drawn as a line, or None.
 # `lead` names the version that is best on the row, or None where the human
 # line already carries the reading. A value of None inside the triple is a
@@ -106,32 +106,35 @@ SECTIONS = [
     ("HOW CLOSE TO THE PERSON'S SCRIPT", BRIGHT, WAVE,
      "A longer bar is better on all three rows.", [
         ("How well the script follows the action",
-         None, [0.793, 0.823, 0.823], "{:.3f}", None,
-         "1.000 is a perfect match with the person's script. Version 0.4.0 "
-         "and Version 0.3.0 are equal here."),
+         None, [0.793, 0.823, 0.826], "{:.3f}", None,
+         "1.000 is a perfect match with the person's script. Version 0.5.0 "
+         "is 0.003 higher than Version 0.4.0."),
         ("How well the script follows the action, on difficult videos",
-         None, [0.716, 0.787, 0.786], "{:.3f}", None,
+         None, [0.716, 0.786, 0.789], "{:.3f}", None,
          "The two most difficult videos of the eleven. Every version is "
          "further behind here, and Version 0.1.0 the furthest. Version "
-         "0.3.0 is 0.001 higher than Version 0.4.0."),
+         "0.5.0 is 0.003 higher than Version 0.4.0."),
         ("Changes of direction at the correct time",
-         None, [83.8, 88.1, 87.0], "{:.1f}%", 1,
-         "Correct to 1/15 second. The two newer versions are close here."),
+         None, [83.8, 87.0, 86.4], "{:.1f}%", 1,
+         "Correct to 1/15 second. Version 0.5.0 is 0.6 points below "
+         "Version 0.4.0."),
     ]),
     ("MOVEMENT THAT IS NOT IN THE PERSON'S SCRIPT", WARN, SQUINT,
      "Longer is worse. A white line marks the person's own count.", [
         ("Changes of direction that the person did not make",
-         None, [28.3, 34.3, 33.7], "{:.1f}%", 0,
+         None, [28.3, 33.7, 32.3], "{:.1f}%", 0,
          "A version that creates more movements finds more of the person's "
-         "movements, and also makes more that the person did not."),
+         "movements, and also makes more that the person did not. Version "
+         "0.5.0 makes fewer of these than Version 0.4.0."),
         ("Fast movements in each minute",
-         22.5, [4.5, 33.8, 29.5], "{:.1f}", None,
+         22.5, [4.5, 29.5, 27.0], "{:.1f}", None,
          "Version 0.1.0 creates far fewer than the person. The two newer "
-         "versions create more, and Version 0.4.0 is the nearer of them."),
+         "versions create more, and Version 0.5.0 is the nearer of them."),
         ("Sudden fast movements where the video is slow, in each minute",
-         0.5, [7.3, 14.3, 10.7], "{:.1f}", None,
+         0.5, [7.3, 10.7, 7.4], "{:.1f}", None,
          "The person creates almost none. Every version creates too many. "
-         "Version 0.4.0 creates 25% fewer than Version 0.3.0."),
+         "Version 0.5.0 creates 31% fewer than Version 0.4.0, and as few as "
+         "Version 0.1.0 with six times its fast movements."),
     ]),
 ]
 
@@ -148,14 +151,11 @@ NOTE_COLS, NOTE_LEAD = 72, 0.26
 # scores. An option a reader must switch on belongs in the release notes,
 # where a page of bars would only dress it up as a measured gain.
 WHATS_NEW = (
-    "The goblins learned on more videos, and they look further ahead in "
-    "one.\n"
-    "They also select how deep each stroke goes. Before, they used the "
-    "average depth.\n"
-    "Movement at a shot cut is smooth now. Before, a cut could ask the "
-    "device for a large move.\n"
-    "Together these make fewer sudden fast movements in the slow parts of "
-    "a video."
+    "The goblins make each stroke no larger than the movement they see.\n"
+    "Before, the depth of a stroke came from the depth model only.\n"
+    "In the slow parts of a video they make 31% fewer sudden fast "
+    "movements.\n"
+    "The times of the changes of direction do not move."
 )
 
 
@@ -221,7 +221,7 @@ def bar_row(ax, y, label, person, values, fmt, lead, note):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("--out", default="infer_out/release_v040")
+    ap.add_argument("--out", default="infer_out/release_v050")
     ap.add_argument("--name", default="goblinscript_versions.png")
     args = ap.parse_args()
 
@@ -240,7 +240,7 @@ def main():
     y = TOP
     ax.text(0, y, "GOBLINSCRIPT", color=BRIGHT, fontsize=27, family=MONO,
             weight="bold", va="top", ha="left")
-    ax.text(0, y - 1.05, "Version 0.4.0, Version 0.3.0 and Version 0.1.0",
+    ax.text(0, y - 1.05, "Version 0.5.0, Version 0.4.0 and Version 0.1.0",
             color=WHITE, fontsize=13, family=MONO, va="top", ha="left")
     ax.text(0, y - 2.00,
             "The goblins created scripts for 11 videos that they did not see\n"
