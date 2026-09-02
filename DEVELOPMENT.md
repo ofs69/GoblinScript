@@ -877,7 +877,9 @@ and the one `xtask` packs from, so a zip cannot carry a runtime its binary was
 not built against. On Linux that package holds the `.so` alone, and
 `ort-sys` links a lib folder statically unless `ORT_PREFER_DYNAMIC_LINK=1`
 says otherwise -- without it the build looks for `libonnxruntime.a`, finds
-none, and stops with "could not link". Windows needs no such thing: its
+none, and stops with "could not link". `cargo xtask dist` sets it for the
+builds it runs, so it is a bare `cargo build` that wants it in the
+environment. Windows needs no such thing: its
 `onnxruntime.lib` is the import library `ort-sys` asks for by name.
 
 Microsoft's runtime needs CUDA **12.9** beside it, not 12.6:
