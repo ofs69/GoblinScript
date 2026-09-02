@@ -336,6 +336,13 @@ pub struct Transnet {
     /// consecutive such frames are one cut, no closer than `min_gap_s`.
     pub thr: f64,
     pub min_gap_s: f64,
+    /// Whether the detector's 48 convolutions were exported as Conv2d. Every
+    /// one of them is separable by construction -- a spatial (1,3,3) or a
+    /// temporal (3,1,1) -- and in that form every GPU provider has a kernel
+    /// for it. A bundle without the field carries the Conv3d graph, which
+    /// only DirectML runs.
+    #[serde(default)]
+    pub conv2d: bool,
 }
 
 /// Graph bytes + the manifest. Sessions are built lazily: the boundary pass and
@@ -454,13 +461,15 @@ impl Bundle {
     pub fn encoder_session(&self) -> Result<Session> {
         session(&self.encoder, "encoder")
     }
-    /// TransNetV2 is 48 Conv3d layers, and the WebGPU provider has no Conv3d
-    /// kernel: it claims the node at session build and fails it at the first
-    /// run. So off Windows the detector runs on the CPU, which its size
-    /// allows -- 7.6M parameters over 27x48 frames, a few seconds per clip.
-    /// DirectML runs the graph as exported and keeps it.
+    /// The shot-cut detector runs on the GPU wherever a provider has kernels
+    /// for its graph: DirectML runs the exported Conv3d, and the WebGPU
+    /// provider -- which has no Conv3d kernel at all, claiming the node at
+    /// session build and failing it at the first run -- runs the Conv2d form
+    /// the Linux bundle carries, 11 ms per 100-frame window against 60 on the
+    /// CPU. A Conv3d bundle off Windows falls back to the CPU, which its size
+    /// allows: 7.6M parameters over 27x48 frames, a few seconds per clip.
     pub fn transnet_session(&self) -> Result<Session> {
-        if cfg!(windows) {
+        if cfg!(windows) || self.manifest.transnet.conv2d {
             session(&self.transnet, "transnet")
         } else {
             cpu_session(&self.transnet, "transnet")

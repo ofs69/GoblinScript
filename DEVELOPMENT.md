@@ -808,19 +808,34 @@ Dawn, and the Linux binary carries `$ORIGIN` in its rpath so
 exe. `cargo xtask dist` packs whichever platform it runs on.
 
 **Two bundles of one model.** The WebGPU provider has no kernel for the
-packed-QKV `MultiHeadAttention` DirectML runs fastest, and none for Conv3d,
-which is what the tubelet patch embedding is. So the Linux binary embeds its
-own export of the same checkpoint: `export_bundle.py --cpu-attn --conv2d`,
-the separate attention layout plus the tubelet Conv3d rewritten as two fp32
-Conv2d passes summed. The manifest stamps both choices (`attn`, `tubelet`),
-and the parity read on DirectML puts that graph within a few percent of the
-packed one on int8-identical latents. The Windows bundle keeps the packed
-Conv3d graph, because it is 2.4x faster there. TransNetV2 is 48 Conv3d
-layers and is not rewritten: off Windows the shot-cut detector runs on the
-CPU, which its 7.6M parameters over 27x48 frames allow at a few seconds per
-clip. `--bench` runs that graph once as well as the encoder, because a GPU
-provider builds a session it cannot execute and only says so at the first
-node.
+packed-QKV `MultiHeadAttention` DirectML runs fastest, none for Conv3d --
+which is what the tubelet patch embedding and all 48 of TransNetV2's layers
+are -- and no 8-bit type, so its `Cast` unpacks a uint8 tensor byte by byte.
+So the Linux binary embeds its own export of the same checkpoint,
+`export_bundle.py --webgpu`, which writes the forms that provider runs: the
+separate attention layout, the tubelet Conv3d as two fp32 Conv2d passes
+summed, the uint8 frame entry as one `DequantizeLinear` that carries the
+normalize's own `1/(255*std)` scale, and every TransNetV2 convolution as the
+Conv2d it already is -- each one separable by construction, a spatial
+`(1,3,3)` or a temporal `(3,1,1)`. The manifest stamps the choices (`attn`,
+`tubelet`, `transnet.conv2d`), and the parity read on DirectML puts that
+graph within a few percent of the packed one on int8-identical latents. The
+Windows bundle keeps the packed Conv3d graph, because it is 2.4x faster
+there. `--bench` runs the detector once as well as the encoder, because a
+GPU provider builds a session it cannot execute and only says so at the
+first node.
+
+**What the WebGPU path costs, measured on a 4090.** 152 ms per encoder
+forward against DirectML's 59: the attention is 92 ms of it, the MLP 35, and
+both run at ~32 TFLOP/s. That is ~40% of the card's *vector-ALU* fp16 peak
+and the ceiling of this runtime -- ONNX Runtime's WebGPU provider reaches the
+tensor cores only from `MatMulNBits`, while DirectML's metacommands use them
+for everything, and no shape of the graph closes that. The attention is
+already on the provider's FlashAttention path: written unfused it is 363 ms,
+and its peak allocation never holds a score matrix. What the graph forms DO
+buy is the 20 ms stem down to 7 (the `DequantizeLinear` entry, bit-identical
+over all 14.2M input values) and the detector's 60 ms per window down to 11,
+off the cores `prefetch` is already spending on libx264.
 
 **The release zips come from GitHub Actions.** A `v*` tag runs
 `.github/workflows/release.yml`: one runner per platform fetches the inputs
