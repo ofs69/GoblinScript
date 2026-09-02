@@ -1,6 +1,8 @@
 # What a bare checkout has to pass: no bundle, no soundtrack, no GPU. That is
 # what the split buys -- everything below the model is ordinary Rust, and it is
-# checked on every push rather than only on the machine that ships.
+# checked on every push rather than only on the machine that ships. Both
+# platforms the release packs are built here, so a Linux-only link error is
+# found on a push and not on a tag.
 name: CI
 
 on:
@@ -13,11 +15,19 @@ env:
 
 jobs:
   test:
-    # Windows-only by construction: the MIDI player is winmm and DirectML is the
-    # inference backend, so another runner would not be building this app.
-    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-22.04]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+
+      # The audio crate links ALSA on Linux; the runner image carries the
+      # headers only when asked.
+      - name: Linux build packages
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev pkg-config
 
       - name: Cache cargo
         uses: actions/cache@v4

@@ -533,7 +533,10 @@ pub fn ort_err<R>(e: ort::Error<R>) -> anyhow::Error {
 /// One session on the best GPU we can reach.
 ///
 /// DirectML is the floor: it is the only backend that covers every vendor's
-/// GPU on Windows, which is what makes the binary distributable. A `cuda`
+/// GPU on Windows, which is what makes the binary distributable. On every
+/// other platform the floor is ONNX Runtime's WebGPU provider over Dawn's
+/// Vulkan backend, for the same reason: a Mesa or NVIDIA driver is all a
+/// Linux machine needs, with no CUDA runtime to install. A `cuda`
 /// build tries a CUDA session FIRST -- ONNX Runtime refuses CUDA and DML in
 /// one session, so it is a separate attempt, and `error_on_failure` makes a
 /// machine without CUDA/cuDNN fail that attempt instead of silently landing
@@ -551,7 +554,11 @@ fn session(bytes: &[u8], what: &str) -> Result<Session> {
     if force_cpu() {
         return cpu_session(bytes, what);
     }
-    use ort::execution_providers::{CPUExecutionProvider, DirectMLExecutionProvider};
+    use ort::execution_providers::CPUExecutionProvider;
+    #[cfg(windows)]
+    use ort::execution_providers::DirectMLExecutionProvider;
+    #[cfg(not(windows))]
+    use ort::execution_providers::{webgpu::DawnBackendType, WebGPUExecutionProvider};
     #[cfg(feature = "cuda")]
     {
         use ort::execution_providers::CUDAExecutionProvider;
@@ -578,11 +585,11 @@ fn session(bytes: &[u8], what: &str) -> Result<Session> {
                 // through the progress bars.
                 static ONCE: std::sync::Once = std::sync::Once::new();
                 ONCE.call_once(|| {
-                    *PROVIDER_NOTE.lock().unwrap() = Some(
-                        "note: CUDA not available, running on DirectML \
-                         (the fast path needs the CUDA 12 runtime + cuDNN 9 on PATH)"
-                            .to_string(),
-                    );
+                    *PROVIDER_NOTE.lock().unwrap() = Some(format!(
+                        "note: CUDA not available, running on {} \
+                         (the fast path needs the CUDA 12 runtime + cuDNN 9 on PATH)",
+                        if cfg!(windows) { "DirectML" } else { "WebGPU" }
+                    ));
                 });
             }
         }
@@ -590,7 +597,12 @@ fn session(bytes: &[u8], what: &str) -> Result<Session> {
     Session::builder()
         .map_err(ort_err)?
         .with_execution_providers([
+            #[cfg(windows)]
             DirectMLExecutionProvider::default().build(),
+            #[cfg(not(windows))]
+            WebGPUExecutionProvider::default()
+                .with_dawn_backend_type(DawnBackendType::Vulkan)
+                .build(),
             CPUExecutionProvider::default().build(),
         ])
         .map_err(ort_err)?

@@ -43,7 +43,13 @@ console = "0.15"
 ratatui = "0.29"
 # No ndarray here on purpose: tensors go in and out of ort as (shape, &[T]),
 # which keeps us off ort's own ndarray version and out of dependency conflicts.
-ort = { version = "2.0.0-rc.12", features = ["directml"] }
+# The default feature set with rustls in place of the platform TLS: the
+# prebuilt runtime is fetched at build time, and a Linux build then needs no
+# OpenSSL headers on the host.
+ort = { version = "2.0.0-rc.12", default-features = false, features = [
+    "std", "ndarray", "tracing", "download-binaries", "tls-rustls",
+    "copy-dylibs", "api-24", "directml",
+] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 blake3 = "1"
@@ -55,6 +61,14 @@ tiny_http = "0.12"
 rodio = { version = "0.20", default-features = false }
 sysinfo = { version = "0.39.6", default-features = false, features = ["system"] }
 midly = { version = "0.5.3", default-features = false, features = ["std"] }
+
+# The GPU floor on every other platform. DirectML is Windows-only, and the
+# encoder's packed attention has no CPU kernel, so a Linux build needs a
+# vendor-neutral GPU provider of its own: ONNX Runtime's WebGPU provider over
+# Dawn's Vulkan backend, which any Mesa or NVIDIA driver serves. Target-scoped
+# so a Windows build keeps its DirectML chain and never links Dawn.
+[target.'cfg(not(windows))'.dependencies]
+ort = { version = "2.0.0-rc.12", default-features = false, features = ["webgpu"] }
 
 [features]
 # The release build bakes the ONNX bundle into the exe; a dev build reads it

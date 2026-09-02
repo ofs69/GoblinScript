@@ -1,0 +1,111 @@
+# A version tag builds the zips that the release page carries: one per
+# platform, each packed by `cargo xtask dist` on its own runner, from the same
+# two inputs the machine that trains the model uploads once per champion.
+#
+# The inputs live on the permanent `bundle` release of this repository, under
+# fixed asset names, so this file never changes when the model does:
+#
+#   bundle.zip         the goblins' model for Windows -- the ONNX graphs and
+#                      their manifest, with the packed attention DirectML
+#                      runs fastest.
+#   bundle-linux.zip   the same model exported for the WebGPU provider:
+#                      separate-layout attention and a Conv2d tubelet
+#                      embedding, the two forms that provider has kernels
+#                      for. `bundle.sha256` in the repository pins both
+#                      files, and a build stops on any other.
+#   music.zip          the soundtrack, General MIDI files that build.rs
+#                      bakes in.
+#
+# The zips land on the release for the tag. When no release exists yet, a
+# DRAFT is created for the tag, so the notes are written by a person and the
+# page is published by a person; the workflow only ever attaches files.
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+env:
+  CARGO_TERM_COLOR: always
+  GH_TOKEN: ${{ github.token }}
+
+permissions:
+  contents: write
+
+jobs:
+  # One job makes sure the release exists, so the two builders below never
+  # race each other to create it.
+  release:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Ensure the release exists
+        run: |
+          gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 \
+            || gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
+                 --draft --title "$GITHUB_REF_NAME" \
+                 --notes "Draft made by the release workflow. Write the notes, then publish."
+
+  build:
+    needs: release
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            zip: dml
+            bundle: bundle.zip
+          # The oldest runner, so the binary asks for the oldest glibc.
+          - os: ubuntu-22.04
+            zip: linux-x64
+            bundle: bundle-linux.zip
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Linux build packages
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev pkg-config
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}
+
+      # The tag names the version; Cargo.toml declares it. A zip whose boot
+      # screen says one thing and whose tag says another is the one lie a
+      # release page can carry, so the two are held equal here.
+      - name: Tag matches the crate version
+        shell: bash
+        run: |
+          ver=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          [ "v$ver" = "$GITHUB_REF_NAME" ] \
+            || { echo "Cargo.toml says $ver, the tag says $GITHUB_REF_NAME"; exit 1; }
+
+      - name: Fetch the build inputs
+        shell: bash
+        run: |
+          gh release download bundle --repo "$GITHUB_REPOSITORY" \
+            --pattern "${{ matrix.bundle }}" --pattern music.zip --dir inputs
+          # the pin file is LF by .gitattributes; a CR from any checkout
+          # setting would make every name miss, so it is stripped regardless
+          tr -d '\r' < bundle.sha256 > inputs/pins
+          (cd inputs && grep -q "${{ matrix.bundle }}" pins \
+             && sha256sum -c --ignore-missing pins)
+          mkdir -p bundle music
+          unzip -q "inputs/${{ matrix.bundle }}" -d bundle
+          unzip -q inputs/music.zip -d music
+          ls bundle music
+
+      - name: Pack
+        run: cargo xtask dist
+
+      - name: Attach the zip to the release
+        shell: bash
+        run: |
+          gh release upload "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --clobber \
+            dist/goblinscript-*-${{ matrix.zip }}.zip

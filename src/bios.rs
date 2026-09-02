@@ -397,12 +397,11 @@ pub fn devices(p: &Post, man: &crate::bundle::Manifest) {
         p.line("Accelerator chain", "CPU (forced by --cpu)", Status::Warn);
         p.note("the GPU is skipped -- expect hours where a graphics card takes minutes");
     } else {
-        let chain = if cfg!(feature = "cuda") {
-            "CUDA -> DirectML -> CPU"
-        } else if cfg!(windows) {
-            "DirectML -> CPU"
-        } else {
-            "CPU"
+        let chain = match (cfg!(feature = "cuda"), cfg!(windows)) {
+            (true, true) => "CUDA -> DirectML -> CPU",
+            (true, false) => "CUDA -> WebGPU -> CPU",
+            (false, true) => "DirectML -> CPU",
+            (false, false) => "WebGPU -> CPU",
         };
         p.line("Accelerator chain", chain, Status::Ok);
     }

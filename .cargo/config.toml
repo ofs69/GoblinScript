@@ -1,3 +1,8 @@
 # `cargo xtask dist` -> build both release variants and pack dist/ zips.
 [alias]
 xtask = "run --release --package xtask --"
+
+# The Linux binary finds libwebgpu_dawn.so beside itself, the way the Windows
+# exe finds DirectML.dll: the zip is a folder, not an install.
+[target.x86_64-unknown-linux-gnu]
+rustflags = ["-C", "link-arg=-Wl,-rpath,$ORIGIN"]

@@ -794,6 +794,41 @@ needs no GPU and no ffmpeg -- it is bytes out of the exe, dispatched before
 any of that is looked for. `--features embed` reads `bundle/` at compile time
 and will not build without it.
 
+**Two platforms, one floor each.** The session chain in `bundle.rs` is
+target-gated: Windows registers DirectML, which every DirectX 12 vendor
+serves, and every other target registers ONNX Runtime's WebGPU provider over
+Dawn's Vulkan backend, which every Mesa or NVIDIA driver serves. Both are the
+same kind of thing -- a GPU path that needs nothing installed beyond the
+driver -- and the encoder's packed attention has no CPU kernel, so a platform
+without one has no floor at all. The `cuda` feature puts a CUDA attempt in
+front of either. The WebGPU provider is a Linux-only dependency
+(`[target.'cfg(not(windows))'.dependencies]`), so a Windows build never links
+Dawn, and the Linux binary carries `$ORIGIN` in its rpath so
+`libwebgpu_dawn.so` is found beside it the way `DirectML.dll` is beside the
+exe. `cargo xtask dist` packs whichever platform it runs on.
+
+**Two bundles of one model.** The WebGPU provider has no kernel for the
+packed-QKV `MultiHeadAttention` DirectML runs fastest, and none for Conv3d,
+which is what the tubelet patch embedding is. So the Linux binary embeds its
+own export of the same checkpoint: `export_bundle.py --cpu-attn --conv2d`,
+the separate attention layout plus the tubelet Conv3d rewritten as two fp32
+Conv2d passes summed. The manifest stamps both choices (`attn`, `tubelet`),
+and the parity read on DirectML puts that graph within a few percent of the
+packed one on int8-identical latents. The Windows bundle keeps the packed
+Conv3d graph, because it is 2.4x faster there.
+
+**The release zips come from GitHub Actions.** A `v*` tag runs
+`.github/workflows/release.yml`: one runner per platform fetches the inputs
+a checkout lacks from the permanent `bundle` release of this repository --
+its platform's model, `bundle.zip` or `bundle-linux.zip`, and `music.zip`,
+the soundtrack -- checks the model against `bundle.sha256`, packs with
+`cargo xtask dist`, and attaches the zip to the tag's release, creating a
+draft when none exists. The asset names never change, so the workflow never
+does; a new champion is two re-uploaded bundle zips and two new lines in
+`bundle.sha256`, in the commit that bumps the version. The pin is what keeps
+an old tag honest: rebuilt a year later, it fails instead of embedding
+whatever model is current.
+
 The vision graphs a shipped bundle carries are **fp16**, with every Softmax
 fused into `com.microsoft.MultiHeadAttention` -- a partly-fused encoder is not
 a thing to ship, and `cargo xtask dist` refuses a non-fp16 bundle outright.

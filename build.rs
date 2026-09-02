@@ -41,6 +41,7 @@ fn main() {
 /// Vista-era program, and Windows starts lying to it about the version it is
 /// running on and scaling its window itself. The four GUIDs are Windows 7, 8,
 /// 8.1 and 10/11, which is every Windows this ships to.
+#[cfg(windows)]
 const MANIFEST: &str = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
   <trustInfo xmlns="urn:schemas-microsoft-com:asm.v3">

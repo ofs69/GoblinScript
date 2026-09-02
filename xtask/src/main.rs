@@ -1,10 +1,17 @@
 //! `cargo xtask dist` -- build the release binary and pack the distribution zip
-//! into `dist/`.
+//! into `dist/`. The host decides which one: a Windows host packs the dml zip
+//! and a Linux host the linux zip, and the release workflow runs one of each.
 //!
 //!   goblinscript-<ver>-dml.zip    exe (embedded bundle) + DirectML.dll.
 //!                               Runs on any DirectX 12 GPU (NVIDIA / AMD /
-//!                               Intel) as-is. This is the default and only
-//!                               artifact.
+//!                               Intel) as-is. This is the default artifact
+//!                               on Windows.
+//!
+//!   goblinscript-<ver>-linux-x64.zip
+//!                               binary (embedded bundle) + libwebgpu_dawn.so,
+//!                               ONNX Runtime's WebGPU provider over Dawn's
+//!                               Vulkan backend. Runs on any Vulkan GPU with
+//!                               its own driver, and needs no CUDA install.
 //!
 //! `cargo xtask dist --cuda` ALSO packs the optional CUDA variant:
 //!
@@ -105,7 +112,14 @@ fn pack(out: &Path, files: &[(PathBuf, String)], readme: &str) -> Result<()> {
     z.start_file("README.txt", opts)?;
     z.write_all(readme.as_bytes())?;
     for (src, name) in files {
-        z.start_file(name.as_str(), opts)?;
+        // A zip carries no mode unless told, and a Linux unzip then writes
+        // the binary and the library without the execute bit.
+        let mode = if name.ends_with(".exe") || name.ends_with(".so") || name == "goblinscript" {
+            0o755
+        } else {
+            0o644
+        };
+        z.start_file(name.as_str(), opts.unix_permissions(mode))?;
         let mut f = File::open(src)
             .with_context(|| format!("{} missing -- did the build run?", src.display()))?;
         std::io::copy(&mut f, &mut z)?;
@@ -139,7 +153,7 @@ const README_COMMON: &str = r#"
 
 [ PUTTING THEM TO WORK ]------------------------------------------------
 
-  Double-click goblinscript.exe. A picker opens in the terminal: browse
+  %START% A picker opens in the terminal: browse
   with the arrow keys, select with Space or Enter, press S to set them
   going. In a crowded folder, / filters by name and A grabs every video at
   once, and each folder shows how many of its videos already have a script.
@@ -281,17 +295,7 @@ const README_COMMON: &str = r#"
 
 [ WHAT THE GOBLINS NEED ]-----------------------------------------------
 
-  Windows ................... 10 (64-bit) or 11
-  A graphics card ........... DirectX 12: NVIDIA, AMD or Intel
-  Video memory (VRAM) ....... 8 GB
-  System memory ............. 8 GB or more
-  ffmpeg, on PATH ........... winget install --id Gyan.FFmpeg
-                             (then open a NEW terminal -- an already-open
-                             one cannot see the PATH change)
-  yt-dlp, for links ......... winget install --id yt-dlp.yt-dlp
-                             (optional, and only for pasting links: without
-                             it the goblins never offer to fetch one)
-  The DLLs from this zip .... kept in the folder with goblinscript.exe
+%NEEDS%
 
   Reckon on roughly half the video's running time per draft. The graphics
   card is genuinely required, not merely recommended: the goblins think in
@@ -314,13 +318,57 @@ const README_COMMON: &str = r#"
   goblinscript --help lists every option.
 "#;
 
+/// The requirement table, per platform. Same rows, each platform's own
+/// spelling of them: the package manager, the graphics API, the file that has
+/// to stay beside the binary.
+const NEEDS_WINDOWS: &str = r"  Windows ................... 10 (64-bit) or 11
+  A graphics card ........... DirectX 12: NVIDIA, AMD or Intel
+  Video memory (VRAM) ....... 8 GB
+  System memory ............. 8 GB or more
+  ffmpeg, on PATH ........... winget install --id Gyan.FFmpeg
+                             (then open a NEW terminal -- an already-open
+                             one cannot see the PATH change)
+  yt-dlp, for links ......... winget install --id yt-dlp.yt-dlp
+                             (optional, and only for pasting links: without
+                             it the goblins never offer to fetch one)
+  The DLLs from this zip .... kept in the folder with goblinscript.exe";
+
+const NEEDS_LINUX: &str = r"  Linux ..................... x86-64, Ubuntu 22.04 or newer, or the like
+  A graphics card ........... Vulkan: NVIDIA, AMD or Intel, with its driver
+                             (Mesa serves AMD and Intel, NVIDIA's own driver
+                             serves NVIDIA -- nothing from CUDA to install)
+  Video memory (VRAM) ....... 8 GB
+  System memory ............. 8 GB or more
+  ffmpeg, on PATH ........... sudo apt install ffmpeg
+                             (or your distribution's own package)
+  yt-dlp, for links ......... sudo apt install yt-dlp
+                             (optional, and only for pasting links: without
+                             it the goblins never offer to fetch one)
+  The .so from this zip ..... kept in the folder with goblinscript";
+
+/// The operator's guide for one platform: the common text with its two
+/// platform slots filled.
+fn readme(ver: &str, windows: bool) -> String {
+    let start = if windows {
+        "Double-click goblinscript.exe."
+    } else {
+        "Run ./goblinscript in a terminal."
+    };
+    let needs = if windows { NEEDS_WINDOWS } else { NEEDS_LINUX };
+    format!(
+        "{}\n{}",
+        banner(ver),
+        README_COMMON.replace("%START%", start).replace("%NEEDS%", needs)
+    )
+}
+
 const README_CUDA: &str = r"
 [ THIS IS THE CUDA BUILD ]----------------------------------------------
 
   With the NVIDIA CUDA 12 runtime and cuDNN 9 on PATH (or their DLLs beside
   the exe), the goblins think on the CUDA provider and think faster.
-  Without them they say so once and carry on with DirectML, exactly like
-  the standard build. Both runtimes are NVIDIA's own downloads and are not
+  Without them they say so once and carry on with the standard build's own
+  graphics path. Both runtimes are NVIDIA's own downloads and are not
   included in this package.
 ";
 
@@ -390,7 +438,11 @@ fn main() -> Result<()> {
 
     let root = root();
     let ver = crate_version(&root)?;
-    let rel = root.join("target/release");
+    // Where cargo put the binary: CARGO_TARGET_DIR when set, else target/.
+    let rel = std::env::var_os("CARGO_TARGET_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| root.join("target"))
+        .join("release");
     let dist = root.join("dist");
     std::fs::create_dir_all(&dist)?;
 
@@ -477,9 +529,17 @@ fn main() -> Result<()> {
     if !license.exists() {
         bail!("LICENSE is missing -- the zips carry GoblinScript's own MIT terms");
     }
+    // The host picks the platform: the binary's name, the GPU provider's own
+    // library beside it, and the zip's suffix.
+    let windows = cfg!(windows);
+    let (exe, gpu_lib, flavor) = if windows {
+        ("goblinscript.exe", "DirectML.dll", "dml")
+    } else {
+        ("goblinscript", "libwebgpu_dawn.so", "linux-x64")
+    };
     let common: Vec<(PathBuf, String)> = [
-        (rel.join("goblinscript.exe"), "goblinscript.exe".to_string()),
-        (rel.join("DirectML.dll"), "DirectML.dll".to_string()),
+        (rel.join(exe), exe.to_string()),
+        (rel.join(gpu_lib), gpu_lib.to_string()),
         (license, "LICENSE".to_string()),
         (notices.clone(), "THIRD-PARTY-NOTICES.txt".to_string()),
     ]
@@ -489,9 +549,9 @@ fn main() -> Result<()> {
 
     build(&root, "embed")?;
     pack(
-        &dist.join(format!("goblinscript-{ver}-dml.zip")),
+        &dist.join(format!("goblinscript-{ver}-{flavor}.zip")),
         &common,
-        &format!("{}\n{README_COMMON}", banner(&ver)),
+        &readme(&ver, windows),
     )?;
 
     // The CUDA variant runs everywhere the DML one does -- it falls back to
@@ -501,20 +561,17 @@ fn main() -> Result<()> {
     if want_cuda {
         build(&root, "embed,cuda")?;
         let mut cuda = common.clone();
-        cuda.extend([
-            (
-                rel.join("onnxruntime_providers_cuda.dll"),
-                "onnxruntime_providers_cuda.dll".to_string(),
-            ),
-            (
-                rel.join("onnxruntime_providers_shared.dll"),
-                "onnxruntime_providers_shared.dll".to_string(),
-            ),
-        ]);
+        let providers: [&str; 2] = if windows {
+            ["onnxruntime_providers_cuda.dll", "onnxruntime_providers_shared.dll"]
+        } else {
+            ["libonnxruntime_providers_cuda.so", "libonnxruntime_providers_shared.so"]
+        };
+        cuda.extend(providers.iter().map(|p| (rel.join(p), p.to_string())));
+        let suffix = if windows { "cuda" } else { "linux-x64-cuda" };
         pack(
-            &dist.join(format!("goblinscript-{ver}-cuda.zip")),
+            &dist.join(format!("goblinscript-{ver}-{suffix}.zip")),
             &cuda,
-            &format!("{}\n{README_COMMON}{README_CUDA}", banner(&ver)),
+            &format!("{}{README_CUDA}", readme(&ver, windows)),
         )?;
     } else {
         println!("\n(CUDA variant skipped -- `cargo xtask dist --cuda` also builds it.)");

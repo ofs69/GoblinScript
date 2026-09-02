@@ -18,6 +18,10 @@
 //! stage, a failure, a skip -- never per keystroke and never on a piped run,
 //! where an overnight batch would be blipping to nobody.
 
+// The soundtrack plays through winmm, so on any other target the score
+// machinery below is compiled and never called.
+#![cfg_attr(not(windows), allow(dead_code))]
+
 use rodio::{OutputStream, OutputStreamHandle, Sink};
 use std::io::IsTerminal;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};

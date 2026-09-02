@@ -42,13 +42,16 @@ file itself is never touched.
 
 ## What you need
 
-* **Windows 10 (64-bit) or 11.**
-* A **DirectX 12 graphics card** (NVIDIA, AMD, Intel) with **8 GB of VRAM**.
-  There is no CPU-only mode: the goblins think in a form only a GPU can hold.
+* **Windows 10 (64-bit) or 11**, or **Linux** on x86-64 (Ubuntu 22.04 or
+  newer, or the like).
+* A graphics card with **8 GB of VRAM**: **DirectX 12** on Windows (NVIDIA,
+  AMD, Intel), **Vulkan** on Linux (Mesa serves AMD and Intel, NVIDIA's own
+  driver serves NVIDIA -- nothing from CUDA to install). There is no CPU-only
+  mode: the goblins think in a form only a GPU can hold.
 * **8 GB of system memory**, or more.
-* [ffmpeg](https://ffmpeg.org/) on your PATH -- `winget install --id Gyan.FFmpeg`,
-  then open a new terminal.
-* Keep the `.dll` files from the zip beside `goblinscript.exe`.
+* [ffmpeg](https://ffmpeg.org/) on your PATH -- `winget install --id Gyan.FFmpeg`
+  and then a new terminal on Windows, `sudo apt install ffmpeg` on Linux.
+* Keep the `.dll` or `.so` from the zip beside the goblinscript binary.
 
 Roughly half the video's running time on a fast GPU. Everything runs on your
 machine: no uploads, no internet needed.
@@ -77,11 +80,23 @@ release zip beside `LICENSE` and the third-party notices:
 
 ```
 cargo build --release --features embed     # reads ./bundle at compile time
-cargo xtask dist                           # -> dist/goblinscript-VER-dml.zip
+cargo xtask dist                           # -> dist/goblinscript-VER-dml.zip on Windows,
+                                           #    dist/goblinscript-VER-linux-x64.zip on Linux
 ```
+
+A Linux build wants `libasound2-dev` and `pkg-config` from the distribution;
+everything else, the ONNX Runtime and its WebGPU provider included, is fetched
+by cargo.
 
 `music/` is empty in a checkout and the app runs silent; any General MIDI
 `.mid` files dropped in there become the playlist.
+
+The release zips are built by GitHub Actions from a version tag. The inputs a
+checkout lacks sit on the permanent `bundle` release of this repository:
+`bundle.zip` for Windows, `bundle-linux.zip` for Linux (the same model,
+exported in the forms the WebGPU provider has kernels for), and `music.zip`.
+`bundle.sha256` pins the model a version embeds, and the workflow refuses any
+other.
 
 `DEVELOPMENT.md` is the map: what each stage does, why it is shaped that way,
 and what is measured to keep it honest.
