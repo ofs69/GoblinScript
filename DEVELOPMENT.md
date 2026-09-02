@@ -815,7 +815,12 @@ the separate attention layout plus the tubelet Conv3d rewritten as two fp32
 Conv2d passes summed. The manifest stamps both choices (`attn`, `tubelet`),
 and the parity read on DirectML puts that graph within a few percent of the
 packed one on int8-identical latents. The Windows bundle keeps the packed
-Conv3d graph, because it is 2.4x faster there.
+Conv3d graph, because it is 2.4x faster there. TransNetV2 is 48 Conv3d
+layers and is not rewritten: off Windows the shot-cut detector runs on the
+CPU, which its 7.6M parameters over 27x48 frames allow at a few seconds per
+clip. `--bench` runs that graph once as well as the encoder, because a GPU
+provider builds a session it cannot execute and only says so at the first
+node.
 
 **The release zips come from GitHub Actions.** A `v*` tag runs
 `.github/workflows/release.yml`: one runner per platform fetches the inputs

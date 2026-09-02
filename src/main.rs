@@ -2369,6 +2369,26 @@ fn bench(b: &Bundle) -> Result<()> {
         }
     }
 
+    // The shot-cut detector runs once too: it is the other graph a GPU
+    // provider can build and then refuse at the first node, and a draft
+    // reaches it before the encoder.
+    {
+        let tn = &m.transnet;
+        let shape = vec![1i64, tn.window as i64, tn.input_h as i64, tn.input_w as i64, 3];
+        let n = tn.window * tn.input_h * tn.input_w * 3;
+        let frames: Vec<u8> = (0..n).map(|i| (i % 251) as u8).collect();
+        let mut sess = b.transnet_session()?;
+        let x = ort::value::TensorRef::from_array_view((shape, &frames[..]))
+            .map_err(bundle::ort_err)?;
+        let out = sess.run(ort::inputs!["frames" => x]).map_err(bundle::ort_err)?;
+        let (_s, prob) = out["prob"].try_extract_tensor::<f32>().map_err(bundle::ort_err)?;
+        let n_bad = prob.iter().filter(|v| !v.is_finite()).count();
+        if n_bad > 0 {
+            anyhow::bail!("the shot-cut detector produced {n_bad} non-finite values");
+        }
+        println!("  transnet  forward -> {} probabilities, finite", prob.len());
+    }
+
     let t0 = Instant::now();
     let mut sess = b.encoder_session()?;
     println!("encoder session up in {:.1}s", t0.elapsed().as_secs_f64());

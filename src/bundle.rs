@@ -454,8 +454,17 @@ impl Bundle {
     pub fn encoder_session(&self) -> Result<Session> {
         session(&self.encoder, "encoder")
     }
+    /// TransNetV2 is 48 Conv3d layers, and the WebGPU provider has no Conv3d
+    /// kernel: it claims the node at session build and fails it at the first
+    /// run. So off Windows the detector runs on the CPU, which its size
+    /// allows -- 7.6M parameters over 27x48 frames, a few seconds per clip.
+    /// DirectML runs the graph as exported and keeps it.
     pub fn transnet_session(&self) -> Result<Session> {
-        session(&self.transnet, "transnet")
+        if cfg!(windows) {
+            session(&self.transnet, "transnet")
+        } else {
+            cpu_session(&self.transnet, "transnet")
+        }
     }
     /// The head runs on the CPU, and not by preference.
     ///
