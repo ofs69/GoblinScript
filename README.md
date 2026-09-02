@@ -44,14 +44,19 @@ file itself is never touched.
 
 * **Windows 10 (64-bit) or 11**, or **Linux** on x86-64 with glibc 2.38 or
   newer (Ubuntu 24.04, Fedora 39, Debian 13, Arch, or the like).
-* A graphics card with **8 GB of VRAM**: **DirectX 12** on Windows (NVIDIA,
-  AMD, Intel), **Vulkan** on Linux (Mesa serves AMD and Intel, NVIDIA's own
-  driver serves NVIDIA -- nothing from CUDA to install). There is no CPU-only
-  mode: the goblins think in a form only a GPU can hold.
+* A graphics card with **8 GB of VRAM**: any **DirectX 12** card on Windows
+  (NVIDIA, AMD, Intel), or an **NVIDIA** card on Linux with its display
+  driver, version 525 or newer. There is no CPU-only mode: the goblins think
+  in a form only a GPU can hold.
+* The package for your card. `windows-dml` runs on every DirectX 12 card and
+  is the small download. `windows-cuda` and `linux-cuda` want an NVIDIA card,
+  and they carry NVIDIA's CUDA 12 and cuDNN 9 libraries with them, so CUDA is
+  nothing you install.
 * **8 GB of system memory**, or more.
 * [ffmpeg](https://ffmpeg.org/) on your PATH -- `winget install --id Gyan.FFmpeg`
   and then a new terminal on Windows, `sudo apt install ffmpeg` on Linux.
-* Keep the `.dll` or `.so` from the zip beside the goblinscript binary.
+* Keep every file from the zip in one folder with the goblinscript binary.
+  The libraries are found there, and nowhere else.
 
 Roughly half the video's running time on a fast GPU. Everything runs on your
 machine: no uploads, no internet needed.
@@ -63,7 +68,7 @@ on. Nothing here is for anyone under 18.
 
 ```
 cargo build --release     # builds; no goblins in it yet
-cargo test                # green on a bare checkout
+cargo test                # green on a bare checkout; see the runtime note below
 ```
 
 The model is not in this repository, but a **released** `goblinscript.exe`
@@ -84,9 +89,12 @@ cargo xtask dist                           # -> dist/goblinscript-VER-windows-dm
                                            #    dist/goblinscript-VER-linux-cuda.zip on Linux
 ```
 
-A Linux build wants `libasound2-dev` and `pkg-config` from the distribution;
-everything else, the ONNX Runtime and its CUDA provider included, is fetched
-by cargo.
+A Windows build fetches its ONNX Runtime through cargo and needs nothing set.
+A Linux build links Microsoft's `onnxruntime-linux-x64-gpu_cuda12` package,
+the one that reaches every NVIDIA card: unpack it, point `ORT_LIB_LOCATION` at
+its `lib` folder and set `ORT_PREFER_DYNAMIC_LINK=1`. It also wants
+`libasound2-dev` and `pkg-config` from the distribution. The crate tree is
+cargo's to fetch on both.
 
 A CUDA zip carries NVIDIA's CUDA 12 and cuDNN 9 libraries beside the binary,
 which the pack reads from `cuda-libs/` (or `CUDA_LIBS_DIR`) and never
