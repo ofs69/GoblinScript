@@ -36,7 +36,7 @@ jobs:
   # One job makes sure the release exists, so the two builders below never
   # race each other to create it.
   release:
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       - name: Ensure the release exists
@@ -55,8 +55,10 @@ jobs:
           - os: windows-latest
             zip: dml
             bundle: bundle.zip
-          # The oldest runner, so the binary asks for the oldest glibc.
-          - os: ubuntu-22.04
+          # The prebuilt ONNX Runtime for Linux links against glibc 2.38 and
+          # the libstdc++ of GCC 13, so 24.04 is the oldest runner that links
+          # it, and the binary asks for that floor at run time.
+          - os: ubuntu-24.04
             zip: linux-x64
             bundle: bundle-linux.zip
     runs-on: ${{ matrix.os }}

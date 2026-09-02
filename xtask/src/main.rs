@@ -333,7 +333,8 @@ const NEEDS_WINDOWS: &str = r"  Windows ................... 10 (64-bit) or 11
                              it the goblins never offer to fetch one)
   The DLLs from this zip .... kept in the folder with goblinscript.exe";
 
-const NEEDS_LINUX: &str = r"  Linux ..................... x86-64, Ubuntu 22.04 or newer, or the like
+const NEEDS_LINUX: &str = r"  Linux ..................... x86-64, Ubuntu 24.04 or newer, or the like
+                             (glibc 2.38: Fedora 39, Debian 13, Arch)
   A graphics card ........... Vulkan: NVIDIA, AMD or Intel, with its driver
                              (Mesa serves AMD and Intel, NVIDIA's own driver
                              serves NVIDIA -- nothing from CUDA to install)

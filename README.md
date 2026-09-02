@@ -42,8 +42,8 @@ file itself is never touched.
 
 ## What you need
 
-* **Windows 10 (64-bit) or 11**, or **Linux** on x86-64 (Ubuntu 22.04 or
-  newer, or the like).
+* **Windows 10 (64-bit) or 11**, or **Linux** on x86-64 with glibc 2.38 or
+  newer (Ubuntu 24.04, Fedora 39, Debian 13, Arch, or the like).
 * A graphics card with **8 GB of VRAM**: **DirectX 12** on Windows (NVIDIA,
   AMD, Intel), **Vulkan** on Linux (Mesa serves AMD and Intel, NVIDIA's own
   driver serves NVIDIA -- nothing from CUDA to install). There is no CPU-only
