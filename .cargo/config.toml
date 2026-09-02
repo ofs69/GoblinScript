@@ -2,7 +2,10 @@
 [alias]
 xtask = "run --release --package xtask --"
 
-# The Linux binary finds libwebgpu_dawn.so beside itself, the way the Windows
-# exe finds DirectML.dll: the zip is a folder, not an install.
+# The Linux binary finds the ONNX Runtime CUDA provider libraries beside
+# itself, the way the Windows exe finds DirectML.dll: the zip is a folder, not
+# an install. It is also where NVIDIA's own CUDA and cuDNN libraries are
+# looked for when they were dropped in beside the binary rather than
+# installed system-wide.
 [target.x86_64-unknown-linux-gnu]
 rustflags = ["-C", "link-arg=-Wl,-rpath,$ORIGIN"]

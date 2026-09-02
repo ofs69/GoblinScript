@@ -85,7 +85,7 @@ cargo xtask dist                           # -> dist/goblinscript-VER-dml.zip on
 ```
 
 A Linux build wants `libasound2-dev` and `pkg-config` from the distribution;
-everything else, the ONNX Runtime and its WebGPU provider included, is fetched
+everything else, the ONNX Runtime and its CUDA provider included, is fetched
 by cargo.
 
 `music/` is empty in a checkout and the app runs silent; any General MIDI
@@ -93,8 +93,7 @@ by cargo.
 
 The release zips are built by GitHub Actions from a version tag. The inputs a
 checkout lacks sit on the permanent `bundle` release of this repository:
-`bundle.zip` for Windows, `bundle-linux.zip` for Linux (the same model,
-exported in the forms the WebGPU provider has kernels for), and `music.zip`.
+`bundle.zip`, the one model both platforms run, and `music.zip`.
 `bundle.sha256` pins the model a version embeds, and the workflow refuses any
 other.
 

@@ -336,13 +336,6 @@ pub struct Transnet {
     /// consecutive such frames are one cut, no closer than `min_gap_s`.
     pub thr: f64,
     pub min_gap_s: f64,
-    /// Whether the detector's 48 convolutions were exported as Conv2d. Every
-    /// one of them is separable by construction -- a spatial (1,3,3) or a
-    /// temporal (3,1,1) -- and in that form every GPU provider has a kernel
-    /// for it. A bundle without the field carries the Conv3d graph, which
-    /// only DirectML runs.
-    #[serde(default)]
-    pub conv2d: bool,
 }
 
 /// Graph bytes + the manifest. Sessions are built lazily: the boundary pass and
@@ -461,19 +454,14 @@ impl Bundle {
     pub fn encoder_session(&self) -> Result<Session> {
         session(&self.encoder, "encoder")
     }
-    /// The shot-cut detector runs on the GPU wherever a provider has kernels
-    /// for its graph: DirectML runs the exported Conv3d, and the WebGPU
-    /// provider -- which has no Conv3d kernel at all, claiming the node at
-    /// session build and failing it at the first run -- runs the Conv2d form
-    /// the Linux bundle carries, 11 ms per 100-frame window against 60 on the
-    /// CPU. A Conv3d bundle off Windows falls back to the CPU, which its size
-    /// allows: 7.6M parameters over 27x48 frames, a few seconds per clip.
+    /// The shot-cut detector runs where the encoder does. Both providers the
+    /// binary ships with have a Conv3d kernel -- DirectML and CUDA -- so the
+    /// 48 layers of TransNetV2 need nothing said about them, and a machine
+    /// with no GPU at all reaches the CPU through the same fallback every
+    /// other graph does, which its size allows: 7.6M parameters over 27x48
+    /// frames, a few seconds per clip.
     pub fn transnet_session(&self) -> Result<Session> {
-        if cfg!(windows) || self.manifest.transnet.conv2d {
-            session(&self.transnet, "transnet")
-        } else {
-            cpu_session(&self.transnet, "transnet")
-        }
+        session(&self.transnet, "transnet")
     }
     /// The head runs on the CPU, and not by preference.
     ///
@@ -550,16 +538,18 @@ pub fn ort_err<R>(e: ort::Error<R>) -> anyhow::Error {
 
 /// One session on the best GPU we can reach.
 ///
-/// DirectML is the floor: it is the only backend that covers every vendor's
-/// GPU on Windows, which is what makes the binary distributable. On every
-/// other platform the floor is ONNX Runtime's WebGPU provider over Dawn's
-/// Vulkan backend, for the same reason: a Mesa or NVIDIA driver is all a
-/// Linux machine needs, with no CUDA runtime to install. A `cuda`
-/// build tries a CUDA session FIRST -- ONNX Runtime refuses CUDA and DML in
-/// one session, so it is a separate attempt, and `error_on_failure` makes a
-/// machine without CUDA/cuDNN fail that attempt instead of silently landing
-/// on CPU -- then falls back to DirectML, so the same binary serves both.
-/// CPU is registered last, but on a shipped bundle it can only ever serve the
+/// On Windows DirectML is the floor: it is the only backend that covers every
+/// vendor's GPU there, which is what makes the binary distributable, and a
+/// `cuda` build puts a CUDA attempt in front of it. On Linux CUDA IS the
+/// floor and there is nothing under it, so the same attempt is not optional
+/// and a machine without the NVIDIA runtime has no GPU path at all.
+///
+/// The CUDA attempt is a session of its own because ONNX Runtime refuses
+/// CUDA and DirectML in one, and `error_on_failure` is what makes a machine
+/// without CUDA/cuDNN FAIL that attempt rather than silently land on the CPU
+/// provider registered beside it.
+///
+/// CPU is registered last, and on a shipped bundle it can only ever serve the
 /// small graphs: the encoder's packed attention has no CPU kernel at all, so a
 /// GPU is not optional here. `main` refuses `--cpu` outright for that bundle.
 ///
@@ -575,9 +565,7 @@ fn session(bytes: &[u8], what: &str) -> Result<Session> {
     use ort::execution_providers::CPUExecutionProvider;
     #[cfg(windows)]
     use ort::execution_providers::DirectMLExecutionProvider;
-    #[cfg(not(windows))]
-    use ort::execution_providers::{webgpu::DawnBackendType, WebGPUExecutionProvider};
-    #[cfg(feature = "cuda")]
+    #[cfg(any(feature = "cuda", not(windows)))]
     {
         use ort::execution_providers::CUDAExecutionProvider;
         let cuda = (|| -> Result<Session> {
@@ -603,11 +591,24 @@ fn session(bytes: &[u8], what: &str) -> Result<Session> {
                 // through the progress bars.
                 static ONCE: std::sync::Once = std::sync::Once::new();
                 ONCE.call_once(|| {
-                    *PROVIDER_NOTE.lock().unwrap() = Some(format!(
-                        "note: CUDA not available, running on {} \
-                         (the fast path needs the CUDA 12 runtime + cuDNN 9 on PATH)",
-                        if cfg!(windows) { "DirectML" } else { "WebGPU" }
-                    ));
+                    *PROVIDER_NOTE.lock().unwrap() = Some(
+                        if cfg!(windows) {
+                            "note: CUDA not available, running on DirectML (the \
+                             fast path needs the CUDA 12 runtime + cuDNN 9 on PATH)"
+                                .to_string()
+                        } else {
+                            // There is no second GPU provider here, so this is
+                            // not a slower path -- it is the CPU, at ~4.5 s a
+                            // forward, and the encoder's packed attention has
+                            // no kernel there at all. Say so as the blocker it
+                            // is rather than as a note about speed.
+                            "note: no CUDA. GoblinScript needs the NVIDIA CUDA 12 \
+                             runtime and cuDNN 9 on LD_LIBRARY_PATH, or their .so \
+                             files beside the binary -- both are NVIDIA's own \
+                             downloads. Without them there is no GPU to draft on."
+                                .to_string()
+                        },
+                    );
                 });
             }
         }
@@ -617,10 +618,6 @@ fn session(bytes: &[u8], what: &str) -> Result<Session> {
         .with_execution_providers([
             #[cfg(windows)]
             DirectMLExecutionProvider::default().build(),
-            #[cfg(not(windows))]
-            WebGPUExecutionProvider::default()
-                .with_dawn_backend_type(DawnBackendType::Vulkan)
-                .build(),
             CPUExecutionProvider::default().build(),
         ])
         .map_err(ort_err)?

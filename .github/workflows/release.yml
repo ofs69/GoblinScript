@@ -5,17 +5,12 @@
 # The inputs live on the permanent `bundle` release of this repository, under
 # fixed asset names, so this file never changes when the model does:
 #
-#   bundle.zip         the goblins' model for Windows -- the ONNX graphs and
-#                      their manifest, with the packed attention DirectML
-#                      runs fastest.
-#   bundle-linux.zip   the same model exported for the WebGPU provider:
-#                      separate-layout attention, a Conv2d tubelet embedding,
-#                      a DequantizeLinear frame entry and a Conv2d shot-cut
-#                      detector, the forms that provider has kernels for. It
-#                      serves the Linux CUDA zip as well, which is the same
-#                      binary with the NVIDIA fast path registered ahead of
-#                      WebGPU. `bundle.sha256` in the repository pins both
-#                      files, and a build stops on any other.
+#   bundle.zip         the goblins' model -- the ONNX graphs and their
+#                      manifest. ONE model serves both platforms: DirectML
+#                      and CUDA each have a kernel for the packed attention
+#                      and the Conv3d, so there is nothing to export twice.
+#                      `bundle.sha256` in the repository pins it, and a build
+#                      stops on any other file.
 #   music.zip          the soundtrack, General MIDI files that build.rs
 #                      bakes in.
 #
@@ -58,26 +53,12 @@ jobs:
           - os: windows-latest
             zip: dml
             bundle: bundle.zip
-            dist: ''
           # The prebuilt ONNX Runtime for Linux links against glibc 2.38 and
           # the libstdc++ of GCC 13, so 24.04 is the oldest runner that links
           # it, and the binary asks for that floor at run time.
           - os: ubuntu-24.04
             zip: linux-x64
-            bundle: bundle-linux.zip
-            dist: ''
-          # The CUDA variant, on Linux only. The WebGPU provider reaches the
-          # tensor cores from nothing but MatMulNBits, so the encoder forward
-          # is 152 ms there against DirectML's 59 on the same card, and CUDA
-          # is the only way across that gap -- while on Windows it measures
-          # ~56 ms to DirectML's 60 and would be a ~400 MB provider library
-          # carried for nothing. Its own job rather than a second zip out of
-          # the one above: a build that fails here must not take the floor's
-          # zip with it, and `fail-fast: false` keeps the rest going.
-          - os: ubuntu-24.04
-            zip: linux-x64-cuda
-            bundle: bundle-linux.zip
-            dist: '--cuda'
+            bundle: bundle.zip
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -120,11 +101,8 @@ jobs:
           unzip -q inputs/music.zip -d music
           ls bundle music
 
-      # `--cuda` builds the standard variant too, and this job uploads only
-      # its own zip: the glob below ends in the matrix's suffix, and
-      # `-linux-x64.zip` does not match `-linux-x64-cuda.zip`.
       - name: Pack
-        run: cargo xtask dist ${{ matrix.dist }}
+        run: cargo xtask dist
 
       - name: Attach the zip to the release
         shell: bash

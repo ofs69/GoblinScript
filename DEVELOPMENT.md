@@ -795,56 +795,55 @@ any of that is looked for. `--features embed` reads `bundle/` at compile time
 and will not build without it.
 
 **Two platforms, one floor each.** The session chain in `bundle.rs` is
-target-gated: Windows registers DirectML, which every DirectX 12 vendor
-serves, and every other target registers ONNX Runtime's WebGPU provider over
-Dawn's Vulkan backend, which every Mesa or NVIDIA driver serves. Both are the
-same kind of thing -- a GPU path that needs nothing installed beyond the
-driver -- and the encoder's packed attention has no CPU kernel, so a platform
-without one has no floor at all. The `cuda` feature puts a CUDA attempt in
-front of either. The WebGPU provider is a Linux-only dependency
-(`[target.'cfg(not(windows))'.dependencies]`), so a Windows build never links
-Dawn, and the Linux binary carries `$ORIGIN` in its rpath so
-`libwebgpu_dawn.so` is found beside it the way `DirectML.dll` is beside the
-exe. `cargo xtask dist` packs whichever platform it runs on.
+target-gated. Windows registers DirectML, which every DirectX 12 vendor
+serves, so the Windows zip runs on any card with nothing installed beyond the
+driver; the `cuda` feature puts a CUDA attempt in front of it, falling back
+at runtime. Linux registers CUDA, and there is nothing under it. That is a
+narrower floor on purpose: the encoder's packed attention has no CPU kernel,
+so a platform with no GPU provider has no floor at all, and the
+vendor-neutral option -- ONNX Runtime's WebGPU provider over Dawn -- costs
+2.9x (152 ms a forward against CUDA's 52 on the same 4090) because it reaches
+the tensor cores from nothing but `MatMulNBits`, while asking for a second
+model export and a second set of graph rewrites to feed it. So off Windows
+CUDA is a dependency rather than a feature
+(`[target.'cfg(not(windows))'.dependencies]`), a Linux build cannot be
+configured without it, and the plain `cargo build` CI runs is the build the
+release ships. The Linux binary carries `$ORIGIN` in its rpath, so the ORT
+CUDA provider libraries beside it are found the way `DirectML.dll` is found
+beside the exe -- and so are NVIDIA's own CUDA and cuDNN libraries when they
+were dropped in there instead of installed. `cargo xtask dist` packs
+whichever platform it runs on.
 
-**Two bundles of one model.** The WebGPU provider has no kernel for the
-packed-QKV `MultiHeadAttention` DirectML runs fastest, none for Conv3d --
-which is what the tubelet patch embedding and all 48 of TransNetV2's layers
-are -- and no 8-bit type, so its `Cast` unpacks a uint8 tensor byte by byte.
-So the Linux binary embeds its own export of the same checkpoint,
-`export_bundle.py --webgpu`, which writes the forms that provider runs: the
-separate attention layout, the tubelet Conv3d as two fp32 Conv2d passes
-summed, the uint8 frame entry as one `DequantizeLinear` that carries the
-normalize's own `1/(255*std)` scale, and every TransNetV2 convolution as the
-Conv2d it already is -- each one separable by construction, a spatial
-`(1,3,3)` or a temporal `(3,1,1)`. The manifest stamps the choices (`attn`,
-`tubelet`, `transnet.conv2d`), and the parity read on DirectML puts that
-graph within a few percent of the packed one on int8-identical latents. The
-Windows bundle keeps the packed Conv3d graph, because it is 2.4x faster
-there. `--bench` runs the detector once as well as the encoder, because a
-GPU provider builds a session it cannot execute and only says so at the
-first node.
+**One bundle, both platforms.** DirectML and CUDA each have a kernel for the
+packed-QKV `MultiHeadAttention` and for Conv3d, so the same `bundle.zip`
+serves Windows and Linux and there is nothing to export twice. On a 4090 the
+encoder forward is 59 ms on DirectML and 52 on CUDA, and the shot-cut
+detector's 100-frame window is 4 ms on CUDA against 60 on the CPU. `--bench`
+runs the detector once as well as the encoder, because a GPU provider builds
+a session it cannot execute and only says so at the first node.
 
-**What the WebGPU path costs, measured on a 4090.** 152 ms per encoder
-forward against DirectML's 59: the attention is 92 ms of it, the MLP 35, and
-both run at ~32 TFLOP/s. That is ~40% of the card's *vector-ALU* fp16 peak
-and the ceiling of this runtime -- ONNX Runtime's WebGPU provider reaches the
-tensor cores only from `MatMulNBits`, while DirectML's metacommands use them
-for everything, and no shape of the graph closes that. The attention is
-already on the provider's FlashAttention path: written unfused it is 363 ms,
-and its peak allocation never holds a score matrix. What the graph forms DO
-buy is the 20 ms stem down to 7 (the `DequantizeLinear` entry, bit-identical
-over all 14.2M input values) and the detector's 60 ms per window down to 11,
-off the cores `prefetch` is already spending on libx264.
+**Why not a vendor-neutral Linux floor.** ONNX Runtime's WebGPU provider over
+Dawn runs this model correctly on any Vulkan driver, and it was the Linux
+floor for one release. It costs 2.9x -- 152 ms a forward against CUDA's 52 --
+and the reason is not the graph: attention is 92 ms of it and the MLP 35,
+both at ~32 TFLOP/s, which is ~40% of the card's *vector-ALU* fp16 peak,
+because that provider reaches the tensor cores from nothing but
+`MatMulNBits` while DirectML's metacommands and cuBLAS use them for
+everything. The attention was already on its FlashAttention path (written
+unfused it is 363 ms, and its peak allocation never holds a score matrix),
+and no shape of the graph closed the gap. It also has no kernel for packed
+attention or Conv3d and no 8-bit type, so it needed a second model export
+with four rewrites of its own to feed it. Two artifacts and a second export
+path, for a third of the speed, is what was dropped.
 
 **The release zips come from GitHub Actions.** A `v*` tag runs
 `.github/workflows/release.yml`: one runner per platform fetches the inputs
 a checkout lacks from the permanent `bundle` release of this repository --
-its platform's model, `bundle.zip` or `bundle-linux.zip`, and `music.zip`,
-the soundtrack -- checks the model against `bundle.sha256`, packs with
+the model, `bundle.zip`, and `music.zip`, the soundtrack -- checks the model
+against `bundle.sha256`, packs with
 `cargo xtask dist`, and attaches the zip to the tag's release, creating a
 draft when none exists. The asset names never change, so the workflow never
-does; a new champion is two re-uploaded bundle zips and two new lines in
+does; a new champion is one re-uploaded bundle zip and one new line in
 `bundle.sha256`, in the commit that bumps the version. The pin is what keeps
 an old tag honest: rebuilt a year later, it fails instead of embedding
 whatever model is current.
@@ -869,17 +868,16 @@ GPU). The version is SemVer
 with a shipped-release rule: a bare `X.Y.Z` names a build the user has called
 shipped, and every build ahead of that call carries a `-rc.N` suffix in
 `Cargo.toml` -- so a shipped-looking dist name on disk is proof of a ship,
-and a candidate can never overwrite a release. The CUDA variant is opt-in:
-`cargo xtask dist --cuda` also builds `...-cuda.zip` on Windows and
-`...-linux-x64-cuda.zip` on Linux (the same, plus the ORT CUDA provider
-libraries; the CUDA 12 / cuDNN 9 runtimes are NVIDIA's own downloads and stay
-out). It runs everywhere its platform's standard zip does, falling back to
-that zip's own provider at runtime, so what it is worth is what the fallback
-costs -- and that is why the release workflow ships it on LINUX only. Against
-DirectML, CUDA measures ~56 ms to 60: parity, and the provider library is
-dead weight for everyone who has not installed the NVIDIA runtime. Against
-the WebGPU provider's 152 ms it is the only path to the tensor cores, which
-that provider reaches from nothing but `MatMulNBits`. Whatever `bundle/`
+and a candidate can never overwrite a release. On Linux it packs
+`dist/goblinscript-<ver>-linux-x64.zip` (binary + the ORT CUDA provider
+libraries + the same three files; NVIDIA's CUDA 12 runtime and cuDNN 9 are
+their own downloads and stay out, and the zip's README asks for them,
+because without them there is no provider under CUDA to fall back to).
+`cargo xtask dist --cuda` adds `...-cuda.zip` on WINDOWS only, where CUDA is
+an alternative to something: it registers CUDA ahead of DirectML and falls
+back at runtime, and it stays opt-in and unreleased because it buys ~56 ms
+against DirectML's 60 while its 90+ MB provider DLL is dead weight for
+everyone who never installed the NVIDIA runtime. Whatever `bundle/`
 holds is what ships -- the xtask prints its checkpoint so a stale bundle is
 caught before it goes out.
 

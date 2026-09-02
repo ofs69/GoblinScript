@@ -63,21 +63,27 @@ sysinfo = { version = "0.39.6", default-features = false, features = ["system"] 
 midly = { version = "0.5.3", default-features = false, features = ["std"] }
 
 # The GPU floor on every other platform. DirectML is Windows-only, and the
-# encoder's packed attention has no CPU kernel, so a Linux build needs a
-# vendor-neutral GPU provider of its own: ONNX Runtime's WebGPU provider over
-# Dawn's Vulkan backend, which any Mesa or NVIDIA driver serves. Target-scoped
-# so a Windows build keeps its DirectML chain and never links Dawn.
+# encoder's packed attention has no CPU kernel, so a Linux build needs a GPU
+# provider of its own: CUDA, which is NOT a feature there but a dependency.
+# On Windows CUDA is the optional half of a pair and DirectML is the floor
+# under it, so a machine without the NVIDIA runtime still drafts; on Linux
+# there is no second provider to fall back to, so a Linux build that could be
+# configured without CUDA would be a build that cannot draft at all. Making it
+# target-scoped rather than a feature also means the plain `cargo build` CI
+# runs on Linux is the build the release ships.
 [target.'cfg(not(windows))'.dependencies]
-ort = { version = "2.0.0-rc.12", default-features = false, features = ["webgpu"] }
+ort = { version = "2.0.0-rc.12", default-features = false, features = ["cuda"] }
 
 [features]
 # The release build bakes the ONNX bundle into the exe; a dev build reads it
 # from --bundle, so the crate compiles before export_bundle.py has ever run.
 embed = []
-# Optional NVIDIA fast path: registers the CUDA EP ahead of DirectML. Falls
-# back to DirectML at RUNTIME when CUDA/cuDNN DLLs are absent, so one binary
-# still runs everywhere -- the feature only adds the option, never a
-# requirement. (CUDA runtime + cuDNN 9 must be on PATH or beside the exe.)
+# WINDOWS-only: the optional NVIDIA fast path, registering the CUDA EP ahead
+# of DirectML. It falls back to DirectML at RUNTIME when the CUDA/cuDNN DLLs
+# are absent, so one binary still runs everywhere -- the feature only adds
+# the option, never a requirement. (CUDA runtime + cuDNN 9 must be on PATH or
+# beside the exe.) A Linux build has CUDA already, from the dependency table
+# above, and passing this feature there changes nothing.
 cuda = ["ort/cuda"]
 
 [profile.release]

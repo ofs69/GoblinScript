@@ -397,11 +397,14 @@ pub fn devices(p: &Post, man: &crate::bundle::Manifest) {
         p.line("Accelerator chain", "CPU (forced by --cpu)", Status::Warn);
         p.note("the GPU is skipped -- expect hours where a graphics card takes minutes");
     } else {
-        let chain = match (cfg!(feature = "cuda"), cfg!(windows)) {
-            (true, true) => "CUDA -> DirectML -> CPU",
-            (true, false) => "CUDA -> WebGPU -> CPU",
-            (false, true) => "DirectML -> CPU",
-            (false, false) => "WebGPU -> CPU",
+        // Off Windows CUDA is the floor rather than an option, so there is
+        // one Linux chain and the `cuda` feature does not name it.
+        let chain = if !cfg!(windows) {
+            "CUDA -> CPU"
+        } else if cfg!(feature = "cuda") {
+            "CUDA -> DirectML -> CPU"
+        } else {
+            "DirectML -> CPU"
         };
         p.line("Accelerator chain", chain, Status::Ok);
     }
