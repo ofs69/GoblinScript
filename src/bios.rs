@@ -397,12 +397,11 @@ pub fn devices(p: &Post, man: &crate::bundle::Manifest) {
         p.line("Accelerator chain", "CPU (forced by --cpu)", Status::Warn);
         p.note("the GPU is skipped -- expect hours where a graphics card takes minutes");
     } else {
-        // Off Windows CUDA is the floor rather than an option, so there is
-        // one Linux chain and the `cuda` feature does not name it.
-        let chain = if !cfg!(windows) {
+        // A build has one GPU provider and no fallback to another: the CUDA
+        // packages link Microsoft's runtime, which carries no DirectML EP at
+        // all, so there is no second backend under either of them to name.
+        let chain = if cfg!(any(feature = "cuda", not(windows))) {
             "CUDA -> CPU"
-        } else if cfg!(feature = "cuda") {
-            "CUDA -> DirectML -> CPU"
         } else {
             "DirectML -> CPU"
         };

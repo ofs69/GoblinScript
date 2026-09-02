@@ -1,6 +1,6 @@
 [package]
 name = "goblinscript"
-version = "0.5.0"
+version = "0.5.1"
 edition = "2021"
 description = "Video in, funscript out. Made by real goblins: frozen V-JEPA 2.1 perception + the trained head, as one CLI."
 license = "MIT"
@@ -46,9 +46,9 @@ ratatui = "0.29"
 # The default feature set with rustls in place of the platform TLS: the
 # prebuilt runtime is fetched at build time, and a Linux build then needs no
 # OpenSSL headers on the host.
-ort = { version = "2.0.0-rc.12", default-features = false, features = [
+ort = { version = "2.0.0-rc.13", default-features = false, features = [
     "std", "ndarray", "tracing", "download-binaries", "tls-rustls",
-    "copy-dylibs", "api-24", "directml",
+    "copy-dylibs", "api-28", "directml",
 ] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -65,25 +65,25 @@ midly = { version = "0.5.3", default-features = false, features = ["std"] }
 # The GPU floor on every other platform. DirectML is Windows-only, and the
 # encoder's packed attention has no CPU kernel, so a Linux build needs a GPU
 # provider of its own: CUDA, which is NOT a feature there but a dependency.
-# On Windows CUDA is the optional half of a pair and DirectML is the floor
-# under it, so a machine without the NVIDIA runtime still drafts; on Linux
-# there is no second provider to fall back to, so a Linux build that could be
-# configured without CUDA would be a build that cannot draft at all. Making it
-# target-scoped rather than a feature also means the plain `cargo build` CI
-# runs on Linux is the build the release ships.
+# A Linux build that could be configured without CUDA would be a build that
+# cannot draft at all. Making it target-scoped rather than a feature also
+# means the plain `cargo build` CI runs on Linux is the build the release
+# ships.
 [target.'cfg(not(windows))'.dependencies]
-ort = { version = "2.0.0-rc.12", default-features = false, features = ["cuda"] }
+ort = { version = "2.0.0-rc.13", default-features = false, features = ["cuda"] }
 
 [features]
 # The release build bakes the ONNX bundle into the exe; a dev build reads it
 # from --bundle, so the crate compiles before export_bundle.py has ever run.
 embed = []
-# WINDOWS-only: the optional NVIDIA fast path, registering the CUDA EP ahead
-# of DirectML. It falls back to DirectML at RUNTIME when the CUDA/cuDNN DLLs
-# are absent, so one binary still runs everywhere -- the feature only adds
-# the option, never a requirement. (CUDA runtime + cuDNN 9 must be on PATH or
-# beside the exe.) A Linux build has CUDA already, from the dependency table
-# above, and passing this feature there changes nothing.
+# WINDOWS-only: the NVIDIA package, which runs the CUDA EP INSTEAD of
+# DirectML rather than in front of it. There is no fallback between the two,
+# because they do not live in one ONNX Runtime -- the CUDA packages link
+# Microsoft's build, which has no DirectML EP -- so this build wants an
+# NVIDIA card and says so when it does not find one. The CUDA 12 and cuDNN 9
+# libraries ride in the zip beside the exe, which is the only place ONNX
+# Runtime looks for them. A Linux build has CUDA already, from the dependency
+# table above, and passing this feature there changes nothing.
 cuda = ["ort/cuda"]
 
 [profile.release]

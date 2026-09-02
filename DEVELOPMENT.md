@@ -854,32 +854,76 @@ a thing to ship, and `cargo xtask dist` refuses a non-fp16 bundle outright.
 An fp32 encoder is twice the size and ~6.4x slower on DirectML; it exists as a
 range-proof reference to attribute numerics against, never as a release.
 
-`cargo build --release --features embed,cuda` adds the optional CUDA fast
-path. ONNX Runtime refuses CUDA and DirectML in one session, so the CUDA
-attempt is a separate session build that must fail loudly (`error_on_failure`)
-before DirectML is tried -- otherwise a CUDA-less machine would silently land
-on the CPU provider. The draft is EP-independent at the product level: the
-CUDA build's funscript scores the same against the reference draft as
-DirectML's does.
+**A build has exactly one GPU provider.** `cargo build --release --features
+embed` is DirectML and `--features embed,cuda` is CUDA, and neither falls back
+to the other, because the two do not live in one ONNX Runtime. `error_on_failure`
+is what makes a machine without a usable card FAIL the attempt rather than
+silently land on the CPU provider registered beside it, which has no kernel for
+the packed attention and would die at its first node with a message about the
+kernel rather than about the card. The draft is EP-independent at the product
+level: the CUDA build's funscript scores the same against the reference draft
+as DirectML's does.
 
-`cargo xtask dist` packs `dist/goblinscript-<ver>-dml.zip` (exe + DirectML.dll
-+ `THIRD-PARTY-NOTICES.txt` + the operator's `README.txt` -- runs on any DX12
-GPU). The version is SemVer
+**Which ONNX Runtime is a per-package choice, and it is about Blackwell.** The
+DirectML build links the runtime the `ort` crate downloads, which is the only
+one of the two that has a DirectML EP. Its CUDA provider is compiled for
+sm_75, sm_80 and sm_90 with NO PTX, so it has no kernel for a Blackwell card
+and nothing to JIT one from -- an RTX 50-series machine would have no GPU path
+at all on Linux. So the CUDA builds link Microsoft's own
+`onnxruntime-*-gpu_cuda12` package instead, which covers sm_61 to sm_120 on
+Windows and sm_60 to sm_120 on Linux, and they ship it beside the binary.
+`ORT_LIB_LOCATION` points at its `lib` folder; it is the variable cargo reads
+and the one `xtask` packs from, so a zip cannot carry a runtime its binary was
+not built against. Microsoft's runtime needs CUDA **12.9** beside it, not 12.6:
+the older libraries load and then fail on a missing symbol, saying
+`undefined symbol: cudaLibraryGetKernel` on Linux and nothing useful at all on
+Windows (`Error 127`).
+
+**The ONNX Runtime version is PAIRED to the `ort` crate, and the pairing is not
+advisory.** Each `ort-sys` release names the runtime it carries bindings for --
+rc.12 is 1.24, rc.13 is 1.28 -- and the crate's `api-NN` feature has to match:
+`api-28` for 1.28. Running rc.12's bindings against 1.29 builds, links, draws a
+numerically correct draft, and then ABORTS on Linux at teardown with `corrupted
+double-linked list` (exit 134). It is silent on Windows, which is the trap: the
+same mismatch is there and only one platform says so. The isolation that found
+it is worth keeping: ORT 1.24.4 linked dynamically exits cleanly, so it is the
+version gap and not the dynamic linking. When bumping either side, bump both,
+and check the CUDA provider's architectures with `cuobjdump --list-elf` before
+believing a version reaches the cards it claims to -- it carries NO PTX, so
+what is not compiled in cannot be JIT'd.
+
+`cargo xtask dist` packs `dist/goblinscript-<ver>-windows-dml.zip` (exe +
+DirectML.dll + `THIRD-PARTY-NOTICES.txt` + the operator's `README.txt` -- runs
+on any DX12 GPU). The version is SemVer
 with a shipped-release rule: a bare `X.Y.Z` names a build the user has called
 shipped, and every build ahead of that call carries a `-rc.N` suffix in
 `Cargo.toml` -- so a shipped-looking dist name on disk is proof of a ship,
 and a candidate can never overwrite a release. On Linux it packs
-`dist/goblinscript-<ver>-linux-x64.zip` (binary + the ORT CUDA provider
-libraries + the same three files; NVIDIA's CUDA 12 runtime and cuDNN 9 are
-their own downloads and stay out, and the zip's README asks for them,
-because without them there is no provider under CUDA to fall back to).
-`cargo xtask dist --cuda` adds `...-cuda.zip` on WINDOWS only, where CUDA is
-an alternative to something: it registers CUDA ahead of DirectML and falls
-back at runtime, and it stays opt-in and unreleased because it buys ~56 ms
-against DirectML's 60 while its 90+ MB provider DLL is dead weight for
-everyone who never installed the NVIDIA runtime. Whatever `bundle/`
+`dist/goblinscript-<ver>-linux-cuda.zip`, and on Windows
+`cargo xtask dist --cuda` adds `...-windows-cuda.zip`. Whatever `bundle/`
 holds is what ships -- the xtask prints its checkpoint so a stale bundle is
 caught before it goes out.
+
+**A CUDA zip carries NVIDIA's runtime.** ONNX Runtime loads its provider
+library in a way that does NOT resolve that library's own dependencies from
+PATH: `cudnn64_9.dll` on PATH is reported missing, and only a copy beside the
+binary is found. So an installed CUDA on the user's machine buys nothing, and
+the ten libraries `cargo xtask cuda-libs` names ride in the zip instead. They
+come from NVIDIA's redistributable archives into `cuda-libs/`
+(or `CUDA_LIBS_DIR`); the release workflow fetches them, a local pack does
+not, and a missing one stops the pack by name. `CUDA_RUNTIME_WINDOWS` in
+`xtask` is the list, and it is the MINIMUM measured by removing libraries
+until the graphs broke -- `cudnn_engines_precompiled` is what the shot-cut
+detector's Conv3d builds its engine from, while `cudnn_adv`, `cufft`, `curand`
+and `nvrtc` are another 638 MB that changed no timing. NVIDIA's redistribution
+terms go into that zip's notices file.
+
+That runtime is ~1.3 GB, which is why Windows gets two zips: an NVIDIA owner
+takes the CUDA one and reads 60 ms against DirectML's 72 on a 4090, one sixth
+off every draft, and everyone else takes the dml zip and carries none of the
+weight. On Linux there is no choice to make -- CUDA is the only GPU path, so
+the one Linux zip carries it and the user needs an NVIDIA card and its driver
+and nothing more.
 
 ### Licensing and third-party notices
 

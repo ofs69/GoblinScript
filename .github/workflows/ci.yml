@@ -43,5 +43,15 @@ jobs:
       - name: Build
         run: cargo build --workspace --all-targets
 
+      # The Windows CUDA package is a build of its own, and its provider code
+      # sits behind `#[cfg(feature = "cuda")]` -- which the build above does
+      # not compile at all on Windows. Without this, a break in that path would
+      # wait for a release tag to show itself. It links the `ort` crate's own
+      # runtime here: a release links Microsoft's instead, but that is which
+      # cards it reaches, not whether the code compiles.
+      - name: Build the CUDA variant
+        if: runner.os == 'Windows'
+        run: cargo build --features cuda
+
       - name: Test
         run: cargo test --workspace

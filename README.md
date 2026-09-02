@@ -80,13 +80,20 @@ release zip beside `LICENSE` and the third-party notices:
 
 ```
 cargo build --release --features embed     # reads ./bundle at compile time
-cargo xtask dist                           # -> dist/goblinscript-VER-dml.zip on Windows,
-                                           #    dist/goblinscript-VER-linux-x64.zip on Linux
+cargo xtask dist                           # -> dist/goblinscript-VER-windows-dml.zip on Windows,
+                                           #    dist/goblinscript-VER-linux-cuda.zip on Linux
 ```
 
 A Linux build wants `libasound2-dev` and `pkg-config` from the distribution;
 everything else, the ONNX Runtime and its CUDA provider included, is fetched
 by cargo.
+
+A CUDA zip carries NVIDIA's CUDA 12 and cuDNN 9 libraries beside the binary,
+which the pack reads from `cuda-libs/` (or `CUDA_LIBS_DIR`) and never
+downloads for you. That is every Linux zip, and the Windows zip that
+`cargo xtask dist --cuda` adds. `cargo xtask cuda-libs` prints the exact
+names to put there, out of NVIDIA's redistributable archives at
+<https://developer.download.nvidia.com/compute/>.
 
 `music/` is empty in a checkout and the app runs silent; any General MIDI
 `.mid` files dropped in there become the playlist.

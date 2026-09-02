@@ -2164,12 +2164,6 @@ fn draft(
     };
     let (n_actions, art_spans, art_rate) = restyle(&out, man, params)?;
 
-    // a provider note (CUDA->DirectML fallback) stashed during session building
-    // -- queued through `live` so it never corrupts the live line
-    if let Some(note) = bundle::take_provider_note() {
-        live.println(format!("  {}", style(note).fg(con(th.muted))));
-    }
-
     // The model's own view of how well it read this clip. It is the one
     // readout that does not need a reference script, so it is what says
     // whether a change to what the encoder was SHOWN -- a crop above all --

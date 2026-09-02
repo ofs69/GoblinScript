@@ -11,17 +11,6 @@ use ort::session::{builder::GraphOptimizationLevel, Session};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
-/// A one-time provider note (the CUDA->DirectML fallback), stashed rather than
-/// printed where it happens -- session building runs mid-draft, and a stray
-/// print there corrupts the live progress display. `main` drains it through the
-/// progress bars instead.
-static PROVIDER_NOTE: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
-
-/// Take the pending provider note, if any -- drained once by `main`.
-pub fn take_provider_note() -> Option<String> {
-    PROVIDER_NOTE.lock().unwrap().take()
-}
-
 /// Whether this run is pinned to the CPU (`--cpu`). Process-global because the
 /// backend is a property of the RUN, while the choice is made deep inside a
 /// per-graph call with no argument path back to `main` -- and every session,
@@ -416,13 +405,22 @@ pub fn dump(_dir: &Path) -> Result<Vec<(String, usize)>> {
 /// its owner needs. Said in two places -- `probe_gpu` at boot, and `session`
 /// if a later session build is the first to notice -- so it is written once.
 #[cfg(not(windows))]
-const NO_GPU: &str = "no CUDA. GoblinScript needs an NVIDIA card and NVIDIA's own \
-     CUDA 12 runtime plus cuDNN 9, either on LD_LIBRARY_PATH or as .so files \
-     beside the binary. It loads them by major version -- libcudart.so.12, \
-     libcublas.so.12, libcufft.so.11 and libcudnn.so.9 -- so a CUDA 13 install \
-     does not serve this build.";
+const NO_GPU: &str = "no CUDA. GoblinScript needs an NVIDIA card and NVIDIA's \
+     display driver, version 525 or newer. There is nothing else to install: \
+     the CUDA 12 and cuDNN 9 libraries are in the package, and they are read \
+     from the folder the binary is in, so keep them beside it. A remote \
+     desktop or a virtual machine without GPU passthrough is the usual reason \
+     a real card is not visible.";
 
-#[cfg(windows)]
+#[cfg(all(windows, feature = "cuda"))]
+const NO_GPU: &str = "no CUDA. This is the CUDA package, which needs an NVIDIA \
+     card and NVIDIA's display driver, version 525 or newer. There is nothing \
+     else to install: the CUDA 12 and cuDNN 9 libraries are in the package, \
+     and they are read from the folder the exe is in, so keep them beside it. \
+     On a card from another maker, take the -windows-dml package instead: it \
+     runs on any DirectX 12 GPU and is a much smaller download.";
+
+#[cfg(all(windows, not(feature = "cuda")))]
 const NO_GPU: &str = "no graphics card the goblins can think on. GoblinScript \
      needs a DirectX 12 GPU -- any vendor, no runtime to install beyond the \
      display driver. A remote desktop or a virtual machine without GPU \
@@ -491,22 +489,21 @@ impl Bundle {
         if force_cpu() {
             return Ok(());
         }
-        #[cfg(windows)]
-        use ort::execution_providers::DirectMLExecutionProvider;
-        #[cfg(not(windows))]
-        use ort::execution_providers::CUDAExecutionProvider;
+        #[cfg(all(windows, not(feature = "cuda")))]
+        use ort::ep::DirectML;
+        #[cfg(any(feature = "cuda", not(windows)))]
+        use ort::ep::CUDA;
         let smallest = [self.env_step.as_deref(), self.mask.as_deref()]
             .into_iter()
             .flatten()
             .min_by_key(|g| g.len())
             .unwrap_or(&self.transnet);
-        // DirectML is the floor on Windows, so it is what gets asked -- a
-        // `cuda` build that reaches CUDA instead is strictly better off and
-        // never needs this to pass on its own account.
-        #[cfg(windows)]
-        let provider = DirectMLExecutionProvider::default().build().error_on_failure();
-        #[cfg(not(windows))]
-        let provider = CUDAExecutionProvider::default().build().error_on_failure();
+        // The build's one provider is what gets asked, because it is also the
+        // only one a draft can use.
+        #[cfg(all(windows, not(feature = "cuda")))]
+        let provider = DirectML::default().build().error_on_failure();
+        #[cfg(any(feature = "cuda", not(windows)))]
+        let provider = CUDA::default().build().error_on_failure();
         // One closure, so that NO_GPU reaches the error whichever step
         // produced it. Registering the provider is the step that usually
         // does -- a missing CUDA is a library that does not load, which
@@ -566,12 +563,12 @@ impl Bundle {
     /// `None` when the bundle predates the graph; the viewport draws latent
     /// band energy instead and nothing else notices.
     pub fn mask_session(&self) -> Result<Option<Session>> {
-        use ort::execution_providers::CPUExecutionProvider;
+        use ort::ep::CPU;
         let Some(bytes) = &self.mask else { return Ok(None) };
         Ok(Some(
             Session::builder()
                 .map_err(ort_err)?
-                .with_execution_providers([CPUExecutionProvider::default().build()])
+                .with_execution_providers([CPU::default().build()])
                 .map_err(ort_err)?
                 .with_intra_threads(1)
                 .map_err(ort_err)?
@@ -585,10 +582,10 @@ impl Bundle {
 }
 
 fn cpu_session(bytes: &[u8], what: &str) -> Result<Session> {
-    use ort::execution_providers::CPUExecutionProvider;
+    use ort::ep::CPU;
     Session::builder()
         .map_err(ort_err)?
-        .with_execution_providers([CPUExecutionProvider::default().build()])
+        .with_execution_providers([CPU::default().build()])
         .map_err(ort_err)?
         .with_optimization_level(GraphOptimizationLevel::Level3)
         .map_err(ort_err)?
@@ -607,16 +604,20 @@ pub fn ort_err<R>(e: ort::Error<R>) -> anyhow::Error {
 
 /// One session on the best GPU we can reach.
 ///
-/// On Windows DirectML is the floor: it is the only backend that covers every
-/// vendor's GPU there, which is what makes the binary distributable, and a
-/// `cuda` build puts a CUDA attempt in front of it. On Linux CUDA IS the
-/// floor and there is nothing under it, so the same attempt is not optional
-/// and a machine without the NVIDIA runtime has no GPU path at all.
+/// A build has exactly ONE GPU provider, and which one is what separates the
+/// packages. The default build is DirectML, the only backend that covers every
+/// vendor's GPU on Windows, which is what makes that package distributable. A
+/// `cuda` build is CUDA instead, and off Windows CUDA is the only choice there
+/// is.
 ///
-/// The CUDA attempt is a session of its own because ONNX Runtime refuses
-/// CUDA and DirectML in one, and `error_on_failure` is what makes a machine
-/// without CUDA/cuDNN FAIL that attempt rather than silently land on the CPU
-/// provider registered beside it.
+/// There is no fallback from one to the other, because the two do not live in
+/// one ONNX Runtime: the CUDA packages are built by Microsoft, whose runtime
+/// carries CUDA and TensorRT and no DirectML EP at all. Registering DirectML
+/// there returns "Specified provider is not supported", so a `cuda` build that
+/// cannot reach a card says so and stops, exactly as the Linux build does.
+///
+/// `error_on_failure` is what makes a machine without a usable card FAIL the
+/// attempt rather than silently land on the CPU provider registered beside it.
 ///
 /// CPU is registered last, and on a shipped bundle it can only ever serve the
 /// small graphs: the encoder's packed attention has no CPU kernel at all, so a
@@ -631,18 +632,18 @@ fn session(bytes: &[u8], what: &str) -> Result<Session> {
     if force_cpu() {
         return cpu_session(bytes, what);
     }
-    use ort::execution_providers::CPUExecutionProvider;
-    #[cfg(windows)]
-    use ort::execution_providers::DirectMLExecutionProvider;
+    use ort::ep::CPU;
+    #[cfg(all(windows, not(feature = "cuda")))]
+    use ort::ep::DirectML;
     #[cfg(any(feature = "cuda", not(windows)))]
     {
-        use ort::execution_providers::CUDAExecutionProvider;
+        use ort::ep::CUDA;
         let cuda = (|| -> Result<Session> {
             Session::builder()
                 .map_err(ort_err)?
                 .with_execution_providers([
-                    CUDAExecutionProvider::default().build().error_on_failure(),
-                    CPUExecutionProvider::default().build(),
+                    CUDA::default().build().error_on_failure(),
+                    CPU::default().build(),
                 ])
                 .map_err(ort_err)?
                 .with_optimization_level(GraphOptimizationLevel::Level3)
@@ -650,47 +651,20 @@ fn session(bytes: &[u8], what: &str) -> Result<Session> {
                 .commit_from_memory(bytes)
                 .map_err(ort_err)
         })();
-        match cuda {
-            Ok(s) => return Ok(s),
-            #[cfg(not(windows))]
-            Err(e) => {
-                // Nothing is under this. The CPU provider registered below has
-                // no kernel for the encoder's packed attention, so carrying on
-                // buys a session that dies at its first node -- and it dies
-                // saying "Packed QKV of shape (B, L, N, 3, H) not implemented
-                // for CPU", which tells the reader nothing about the CUDA they
-                // are missing. Stop here and name it, including the MAJOR
-                // versions: these libraries are looked for by soname, so a
-                // CUDA 13 install is not a CUDA 12 one and the graphics driver
-                // alone is never enough.
-                return Err(e.context(NO_GPU));
-            }
-            #[cfg(windows)]
-            Err(_) => {
-                // DirectML is under this, so CUDA's absence is a note about
-                // speed rather than a blocker. The raw ORT error is a
-                // screenful of build-server paths and the user-relevant
-                // content is one line; stash it (once) instead of printing
-                // here, because session building runs mid-draft and a stray
-                // print corrupts the live progress display. main drains it
-                // through the progress bars.
-                static ONCE: std::sync::Once = std::sync::Once::new();
-                ONCE.call_once(|| {
-                    *PROVIDER_NOTE.lock().unwrap() = Some(
-                        "note: CUDA not available, running on DirectML (the \
-                         fast path needs the CUDA 12 runtime + cuDNN 9 on PATH)"
-                            .to_string(),
-                    );
-                });
-            }
-        }
+        // Nothing is under this. The CPU provider registered beside it has no
+        // kernel for the encoder's packed attention, so carrying on buys a
+        // session that dies at its first node -- and it dies saying "Packed
+        // QKV of shape (B, L, N, 3, H) not implemented for CPU", which tells
+        // the reader nothing about the card or the driver they are missing.
+        // Stop here and name it.
+        return cuda.map_err(|e| e.context(NO_GPU));
     }
+    #[cfg(all(windows, not(feature = "cuda")))]
     Session::builder()
         .map_err(ort_err)?
         .with_execution_providers([
-            #[cfg(windows)]
-            DirectMLExecutionProvider::default().build(),
-            CPUExecutionProvider::default().build(),
+            DirectML::default().build(),
+            CPU::default().build(),
         ])
         .map_err(ort_err)?
         .with_optimization_level(GraphOptimizationLevel::Level3)

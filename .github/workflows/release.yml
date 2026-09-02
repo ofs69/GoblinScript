@@ -1,6 +1,16 @@
-# A version tag builds the zips that the release page carries: one per
-# platform, each packed by `cargo xtask dist` on its own runner, from the same
-# two inputs the machine that trains the model uploads once per champion.
+# A version tag builds the zips that the release page carries, each packed by
+# `cargo xtask dist` on its own runner, from the same two inputs the machine
+# that trains the model uploads once per champion:
+#
+#   goblinscript-<ver>-windows-dml.zip    every DirectX 12 card
+#   goblinscript-<ver>-windows-cuda.zip   NVIDIA cards, one sixth faster
+#   goblinscript-<ver>-linux-cuda.zip     NVIDIA cards; CUDA is the Linux floor
+#
+# Each CUDA zip carries NVIDIA's own CUDA 12 and cuDNN 9 libraries and
+# Microsoft's ONNX Runtime, both fetched below. That is what makes Windows two
+# zips: those libraries weigh ~1.6 GB and no other vendor's card can use them.
+# A CUDA zip reaches only NVIDIA cards, and the DirectML zip reaches every
+# card there is, so nobody is left without a package.
 #
 # The inputs live on the permanent `bundle` release of this repository, under
 # fixed asset names, so this file never changes when the model does:
@@ -50,14 +60,16 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # Windows packs two: the DirectML zip everyone can run, and the CUDA
+          # zip that NVIDIA owners can take instead.
           - os: windows-latest
-            zip: dml
+            dist: --cuda
             bundle: bundle.zip
           # The prebuilt ONNX Runtime for Linux links against glibc 2.38 and
           # the libstdc++ of GCC 13, so 24.04 is the oldest runner that links
           # it, and the binary asks for that floor at run time.
           - os: ubuntu-24.04
-            zip: linux-x64
+            dist: ""
             bundle: bundle.zip
     runs-on: ${{ matrix.os }}
     steps:
@@ -101,11 +113,98 @@ jobs:
           unzip -q inputs/music.zip -d music
           ls bundle music
 
-      - name: Pack
-        run: cargo xtask dist
+      # NVIDIA's redistributable runtime, which every CUDA zip carries beside
+      # the binary. ONNX Runtime does not resolve these from PATH, so an
+      # installed CUDA on the user's machine would not be found and shipping
+      # them is what makes the CUDA path work at all.
+      #
+      # These are archives of libraries, not an installer: the runner needs no
+      # CUDA and nothing is installed here. The pins are exact, because a
+      # release is reproducible or it is not; `xtask` names any file that does
+      # not arrive, so a moved archive stops the pack rather than shipping a
+      # zip that dies at its first convolution.
+      - name: Fetch NVIDIA's CUDA runtime
+        shell: bash
+        env:
+          CUDA_REDIST: https://developer.download.nvidia.com/compute/cuda/redist
+          CUDNN_REDIST: https://developer.download.nvidia.com/compute/cudnn/redist
+          # 12.9, not 12.6: Microsoft's runtime is built against newer CUDA and
+          # imports symbols the 12.6 libraries do not carry. It fails at load
+          # with `undefined symbol: cudaLibraryGetKernel` on Linux, and with a
+          # bare "Error 127: the specified procedure could not be found" on
+          # Windows, which names nothing at all. Do not lower these.
+          CUDART_VER: 12.9.79
+          CUBLAS_VER: 12.9.2.10
+          CUDNN_VER: 9.10.2.21
+        run: |
+          set -eu
+          mkdir -p nvidia cuda-libs
+          # xtask owns the list; this step only goes and gets it.
+          cargo xtask cuda-libs > wanted
+          cat wanted
+          if [ "$RUNNER_OS" = "Windows" ]; then plat=windows-x86_64; ext=zip
+          else plat=linux-x86_64; ext=tar.xz; fi
+          for u in \
+            "$CUDA_REDIST/cuda_cudart/$plat/cuda_cudart-$plat-$CUDART_VER-archive.$ext" \
+            "$CUDA_REDIST/libcublas/$plat/libcublas-$plat-$CUBLAS_VER-archive.$ext" \
+            "$CUDNN_REDIST/cudnn/$plat/cudnn-$plat-${CUDNN_VER}_cuda12-archive.$ext"
+          do
+            echo "fetching $(basename "$u")"
+            curl -fsSL -o "nvidia/a.$ext" "$u"
+            case $ext in
+              zip) unzip -q "nvidia/a.zip" -d nvidia ;;
+              tar.xz) tar -xf "nvidia/a.tar.xz" -C nvidia ;;
+            esac
+            rm "nvidia/a.$ext"
+            # Take only what is wanted, then drop the rest: these archives hold
+            # several GB the zips have no use for, and the runner's disk is not
+            # large enough to keep three of them unpacked at once.
+            while read -r lib; do
+              f=$(find nvidia -name "$lib" -print -quit)
+              # `-L` reads THROUGH the symlink, so `libcudnn.so.9` lands as one
+              # real file under the soname the loader asks for, rather than a
+              # link to a version that is not in the zip.
+              if [ -n "$f" ]; then cp -L "$f" "cuda-libs/$lib"; fi
+            done < wanted
+            find nvidia -mindepth 1 -maxdepth 1 -exec rm -rf {} +
+          done
+          rmdir nvidia
+          ls -l cuda-libs
+          du -sh cuda-libs
 
-      - name: Attach the zip to the release
+      # Microsoft's own ONNX Runtime, which every CUDA build links and ships.
+      # The `ort` crate downloads a runtime of its own, and that one is what
+      # the DirectML zip uses -- but its CUDA provider is compiled for sm_75,
+      # sm_80 and sm_90 with NO PTX, so it has no kernel for a Blackwell card
+      # and nothing to build one from. Microsoft's covers sm_61 to sm_120.
+      #
+      # ORT_LIB_LOCATION is the variable cargo itself reads, and `xtask` packs
+      # what it points at, so a zip can only carry the runtime its binary was
+      # built against.
+      - name: Fetch Microsoft's ONNX Runtime
+        shell: bash
+        env:
+          ORT_VER: 1.28.1
+        run: |
+          set -eu
+          mkdir -p ort
+          base=https://github.com/microsoft/onnxruntime/releases/download/v$ORT_VER
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            curl -fsSL -o ort/a.zip "$base/onnxruntime-win-x64-gpu_cuda12-$ORT_VER.zip"
+            unzip -q ort/a.zip -d ort
+          else
+            curl -fsSL -o ort/a.tgz "$base/onnxruntime-linux-x64-gpu_cuda12-$ORT_VER.tgz"
+            tar -xzf ort/a.tgz -C ort
+          fi
+          # the one `lib` folder the archive unpacks into, as an absolute path
+          echo "ORT_LIB_LOCATION=$(cd ort/onnxruntime-*/lib && pwd)" >> "$GITHUB_ENV"
+          ls "$(cd ort/onnxruntime-*/lib && pwd)"
+
+      - name: Pack
+        run: cargo xtask dist ${{ matrix.dist }}
+
+      - name: Attach the zips to the release
         shell: bash
         run: |
           gh release upload "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --clobber \
-            dist/goblinscript-*-${{ matrix.zip }}.zip
+            dist/goblinscript-*.zip

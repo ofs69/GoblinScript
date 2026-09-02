@@ -24,3 +24,9 @@ music/
 # what `cargo xtask dist` leaves behind. Both land inside the tree when the app
 # is run or packed from here.
 *.log
+
+# NVIDIA's redistributable CUDA 12 and cuDNN 9 libraries, which a CUDA zip
+# carries beside the binary (see `CUDA_RUNTIME_WINDOWS` in xtask). They are
+# NVIDIA's downloads, ~1.3 GB of them, and the release workflow unpacks them
+# here from the redistributable archives. `CUDA_LIBS_DIR` points elsewhere.
+cuda-libs*/

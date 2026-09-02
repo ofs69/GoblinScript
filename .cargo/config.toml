@@ -2,10 +2,18 @@
 [alias]
 xtask = "run --release --package xtask --"
 
-# The Linux binary finds the ONNX Runtime CUDA provider libraries beside
-# itself, the way the Windows exe finds DirectML.dll: the zip is a folder, not
-# an install. It is also where NVIDIA's own CUDA and cuDNN libraries are
-# looked for when they were dropped in beside the binary rather than
-# installed system-wide.
+# The Linux binary finds every library it ships beside itself, the way the
+# Windows exe finds DirectML.dll: the zip is a folder, not an install.
+#
+# `--disable-new-dtags` is what makes that true, and it is not a preference.
+# It writes the old DT_RPATH instead of DT_RUNPATH, and the two differ in
+# exactly the case this build lives in: DT_RUNPATH applies ONLY to the direct
+# dependencies of the object that carries it, while DT_RPATH is inherited down
+# the whole load chain. ONNX Runtime `dlopen`s its CUDA provider, and that
+# provider carries no runpath of its own, so with DT_RUNPATH the provider's
+# cudart, cublas and cuDNN are looked for on the SYSTEM path only -- which
+# finds nothing on a machine with no CUDA installed, and finds the wrong
+# version on a machine that has an older one. With DT_RPATH they are found in
+# the folder, which is where the zip put them.
 [target.x86_64-unknown-linux-gnu]
-rustflags = ["-C", "link-arg=-Wl,-rpath,$ORIGIN"]
+rustflags = ["-C", "link-arg=-Wl,-rpath,$ORIGIN", "-C", "link-arg=-Wl,--disable-new-dtags"]
