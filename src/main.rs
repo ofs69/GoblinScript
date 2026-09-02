@@ -2340,6 +2340,9 @@ fn heads_only(b: &Bundle, lat: &Path, cuts_json: Option<&Path>, out: &Path) -> R
         put("rev_top", top);
         put("rev_bot", bot);
     }
+    if !tr.period.is_empty() {
+        put("period", &tr.period);
+    }
     std::fs::write(out, serde_json::Value::Object(j).to_string())
         .with_context(|| format!("could not write {}", out.display()))?;
     println!("tracks -> {}", out.display());
