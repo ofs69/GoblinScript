@@ -869,14 +869,19 @@ GPU). The version is SemVer
 with a shipped-release rule: a bare `X.Y.Z` names a build the user has called
 shipped, and every build ahead of that call carries a `-rc.N` suffix in
 `Cargo.toml` -- so a shipped-looking dist name on disk is proof of a ship,
-and a candidate can never overwrite a release. The CUDA variant is
-opt-in: `cargo xtask dist --cuda` also builds `...-cuda.zip` (the same, plus the
-ORT CUDA provider DLLs; the CUDA 12 / cuDNN 9 runtimes are NVIDIA's own
-downloads and stay out). It is not built by default because it runs everywhere
-the DML zip does -- it falls back to DirectML at runtime -- while its ~90 MB CUDA
-provider DLL is dead weight for everyone who has not installed the NVIDIA
-runtime. Whatever `bundle/` holds is what ships -- the xtask prints its
-checkpoint so a stale bundle is caught before it goes out.
+and a candidate can never overwrite a release. The CUDA variant is opt-in:
+`cargo xtask dist --cuda` also builds `...-cuda.zip` on Windows and
+`...-linux-x64-cuda.zip` on Linux (the same, plus the ORT CUDA provider
+libraries; the CUDA 12 / cuDNN 9 runtimes are NVIDIA's own downloads and stay
+out). It runs everywhere its platform's standard zip does, falling back to
+that zip's own provider at runtime, so what it is worth is what the fallback
+costs -- and that is why the release workflow ships it on LINUX only. Against
+DirectML, CUDA measures ~56 ms to 60: parity, and the provider library is
+dead weight for everyone who has not installed the NVIDIA runtime. Against
+the WebGPU provider's 152 ms it is the only path to the tensor cores, which
+that provider reaches from nothing but `MatMulNBits`. Whatever `bundle/`
+holds is what ships -- the xtask prints its checkpoint so a stale bundle is
+caught before it goes out.
 
 ### Licensing and third-party notices
 
