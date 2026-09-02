@@ -1124,6 +1124,8 @@ fn style_cfg(man: &bundle::Manifest, p: &style::Params) -> style::StyleCfg {
         rev_snap: if man.rev_snap_s > 0.0 { man.rows_at(man.rev_snap_s) } else { 0 },
         rev_viterbi: man.rev_source == "viterbi",
         rev_gap_rows: man.rows_at(man.rev_gap_s).max(1),
+        rev_gap_k: man.rev_gap_k,
+        period_cap_rows: man.rows_at(man.period_cap_s).max(1),
         rev_gap_prior: man.rev_gap_prior,
         speed_ref_s: man.speed_ref_s,
         rev_smooth_s: man.rev_smooth_s,

@@ -68,6 +68,8 @@ struct ChunkOut {
     pbot: Vec<f64>,
     rtop: Vec<f64>,
     rbot: Vec<f64>,
+    /// Local period, seconds per row; empty without the head.
+    period: Vec<f64>,
     conf: Vec<f64>,
 }
 
@@ -225,6 +227,8 @@ struct Decode {
     pbot: Vec<f64>,
     rtop: Vec<f64>,
     rbot: Vec<f64>,
+    /// Local period, seconds per row; empty without the head.
+    period: Vec<f64>,
     conf: Vec<f64>,
     /// The confidence head is always present in a current bundle, but an older
     /// one exported before it has no such output -- detect it once and skip the
@@ -254,6 +258,7 @@ impl Decode {
             pbot: Vec::new(),
             rtop: Vec::new(),
             rbot: Vec::new(),
+            period: Vec::new(),
             conf: Vec::new(),
             has_conf,
         }
@@ -314,6 +319,7 @@ impl Decode {
         self.pbot.extend_from_slice(&out.pbot);
         self.rtop.extend_from_slice(&out.rtop);
         self.rbot.extend_from_slice(&out.rbot);
+        self.period.extend_from_slice(&out.period);
         self.conf.extend_from_slice(&out.conf);
         Ok(())
     }
@@ -364,6 +370,9 @@ impl Decode {
             self.rtop.resize(n_rows, nan);
             self.rbot.resize(n_rows, nan);
         }
+        if self.man.heads.period {
+            self.period.resize(n_rows, nan);
+        }
         if self.has_conf {
             self.conf.resize(n_rows, nan);
         }
@@ -375,7 +384,8 @@ impl Decode {
         hold_shot_tails(&mut self.vmarg, shot_edges);
         Ok(tracks_of(
             &self.vmarg, &self.level, &self.blo, &self.bhi, &self.eg,
-            &self.ptop, &self.pbot, &self.rtop, &self.rbot, self.conf, self.man.v_std,
+            &self.ptop, &self.pbot, &self.rtop, &self.rbot, &self.period, self.conf,
+            self.man.v_std,
         ))
     }
 }
@@ -435,6 +445,7 @@ fn run_chunk(
     };
     let (ptop, pbot) = pair(man.heads.plat, "plat_top", "plat_bot")?;
     let (rtop, rbot) = pair(man.heads.rev, "rev_top", "rev_bot")?;
+    let period = if man.heads.period { take("period")? } else { Vec::new() };
 
     // envelope: one step per row, buffer reseeded at the chunk boundary
     let (hshape, h) = out["h"].try_extract_tensor::<f32>().map_err(ort_err)?;
@@ -480,6 +491,7 @@ fn run_chunk(
         pbot,
         rtop,
         rbot,
+        period,
         conf: if has_conf { take("conf")? } else { Vec::new() },
     })
 }
@@ -526,6 +538,7 @@ fn tracks_of(
     pbot: &[f64],
     rtop: &[f64],
     rbot: &[f64],
+    period: &[f64],
     conf: Vec<f64>,
     v_std: f64,
 ) -> Tracks {
@@ -549,6 +562,8 @@ fn tracks_of(
         band: Some((fill(blo, 0.0), fill(bhi, 100.0))),
         plat: two(ptop, pbot),
         rev: two(rtop, rbot),
+        // NaN stays NaN: the decode reads an unforwarded row as a hold
+        period: period.to_vec(),
     }
 }
 

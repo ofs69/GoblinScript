@@ -174,6 +174,16 @@ pub struct Manifest {
     /// moving membership off. Defaults to jepa_infer's `SPEED_REF_S`.
     #[serde(default = "default_speed_ref_s")]
     pub speed_ref_s: f64,
+    /// Per-row refractory off the local-period head: this multiple of the
+    /// predicted period, floored at `rev_gap_s` and capped at
+    /// `period_cap_s`. 0 (absent = the serde default) = the one-number
+    /// refractory.
+    #[serde(default)]
+    pub rev_gap_k: f64,
+    /// Cap on the per-row refractory, SECONDS: a period longer than this is
+    /// a hold, and a hold holds the decode rather than freezing it.
+    #[serde(default = "default_period_cap_s")]
+    pub period_cap_s: f64,
     /// Emission-prior fit window, SECONDS (a cap: normally the whole clip).
     pub bias_fit_s: f64,
     pub transnet: Transnet,
@@ -188,6 +198,11 @@ fn default_speed_ref_s() -> f64 {
 /// jepa_train's `ENV_GAIN_P`, for a bundle exported before the field.
 fn default_env_gain_p() -> f64 {
     0.6
+}
+
+/// jepa_infer's `PERIOD_CAP_S`, for a bundle exported before the field.
+fn default_period_cap_s() -> f64 {
+    2.0
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -218,6 +233,10 @@ pub struct Heads {
     /// Reversal-event head (pre-rev bundles have no field -> false).
     #[serde(default)]
     pub rev: bool,
+    /// Local-period head: the passage's fastest half-stroke period in
+    /// seconds, per row (absent -> false).
+    #[serde(default)]
+    pub period: bool,
 }
 
 fn attn_separate() -> String {

@@ -181,6 +181,125 @@ fn alternating_events_rows(
     (rows, kinds)
 }
 
+/// The alternating event decode with a PER-ROW refractory: an event at row
+/// `i` needs `gap_rows[i]` event-free rows behind it, so the refractory is
+/// signed per window instead of one number for every clip. The state is
+/// (kind of the last event, rows since it, saturated at the largest gap),
+/// and an emission at row `i` is legal from every age at or past
+/// `gap_rows[i]`. Exact Viterbi, one pass. Port of
+/// `common._alternating_gapped_var`; at a constant gap it is
+/// `alternating_events_rows` exactly, and `grid_check.py` pins both
+/// languages to one fixture.
+pub fn alternating_events_rows_var(
+    p_peak: &[f64],
+    p_valley: &[f64],
+    bias: &[f64],
+    gap_rows: &[usize],
+) -> (Vec<usize>, Vec<i8>) {
+    let t_len = p_peak.len();
+    if t_len == 0 {
+        return (Vec::new(), Vec::new());
+    }
+    let g_max = gap_rows.iter().copied().max().unwrap_or(1).max(1);
+    let n_a = g_max + 1; // ages 0..g_max-1, then FREE at index g_max
+    let ns = 1 + 2 * n_a;
+    let free = g_max;
+    let neg = f64::NEG_INFINITY;
+    let base = |k: usize| 1 + k * n_a;
+    let clamp = |v: f64| {
+        let x = if v.is_finite() { v } else { 0.0 };
+        x.clamp(1e-9, 1.0)
+    };
+    let mut score = vec![neg; ns];
+    score[0] = 0.0;
+    let mut back = vec![0u16; t_len * ns];
+    let mut emit = vec![0i8; t_len * ns];
+    let mut next = vec![neg; ns];
+    for i in 0..t_len {
+        let pk = clamp(p_peak[i]);
+        let vl = clamp(p_valley[i]);
+        let nn = clamp(1.0 - pk - vl);
+        let bi = bias[i];
+        let (lpk, lvl_, lnn) = (pk.ln() + bi, vl.ln() + bi, nn.ln());
+        next.fill(neg);
+        let (nb, ne) = (&mut back[i * ns..(i + 1) * ns], &mut emit[i * ns..(i + 1) * ns]);
+        next[0] = score[0] + lnn;
+        nb[0] = 0;
+        for k in 0..2 {
+            let b0 = base(k);
+            for a in 1..n_a {
+                next[b0 + a] = score[b0 + a - 1] + lnn;
+                nb[b0 + a] = (b0 + a - 1) as u16;
+            }
+            let stay = score[b0 + free] + lnn;
+            if stay > next[b0 + free] {
+                next[b0 + free] = stay;
+                nb[b0 + free] = (b0 + free) as u16;
+            }
+        }
+        // emit: from "none yet", or from the OPPOSITE kind at any age at or
+        // past this row's own gap (the first max wins ties, as np.argmax)
+        let gi = gap_rows[i].clamp(1, g_max);
+        for (k, lp) in [(0usize, lpk), (1usize, lvl_)] {
+            let ob = base(1 - k);
+            let mut src_old = ob + gi;
+            let mut c_old = neg;
+            for j in (ob + gi)..(ob + n_a) {
+                if score[j] > c_old {
+                    c_old = score[j];
+                    src_old = j;
+                }
+            }
+            let src = if score[0] >= c_old { 0 } else { src_old };
+            let c = score[0].max(c_old) + lp;
+            if c > next[base(k)] {
+                next[base(k)] = c;
+                nb[base(k)] = src as u16;
+                ne[base(k)] = if k == 0 { 1 } else { 2 };
+            }
+        }
+        std::mem::swap(&mut score, &mut next);
+    }
+    let mut s = 0usize;
+    let mut best = neg;
+    for (i, &v) in score.iter().enumerate() {
+        if v > best {
+            best = v;
+            s = i;
+        }
+    }
+    let mut rows = Vec::new();
+    let mut kinds = Vec::new();
+    for i in (0..t_len).rev() {
+        let e = emit[i * ns + s];
+        if e != 0 {
+            rows.push(i);
+            kinds.push(if e == 1 { 1i8 } else { -1i8 });
+        }
+        s = back[i * ns + s] as usize;
+    }
+    rows.reverse();
+    kinds.reverse();
+    (rows, kinds)
+}
+
+/// A per-row refractory in rows, `k` times the local-period head's period
+/// in seconds. Floored, so quantization never lengthens the gap past `k`
+/// times the stroke; never under the shipped refractory, so the gap only
+/// LENGTHENS where the passage is slow; capped, so a hold holds the decode
+/// rather than freezing it; an unforwarded row (NaN) reads as the cap
+/// period, so it takes `k` times the cap. Port of
+/// `jepa_infer.period_gap_rows`.
+pub fn period_gap_rows(period_s: &[f64], k: f64, fps: f64, floor: usize, cap: usize) -> Vec<usize> {
+    period_s
+        .iter()
+        .map(|&p| {
+            let rows = if p.is_finite() { (k * p * fps).floor() } else { (k * cap as f64).floor() };
+            (rows.max(0.0) as usize).clamp(floor, cap)
+        })
+        .collect()
+}
+
 /// Emission prior (log-odds) whose MAP decode emits about `target` events on
 /// the rows given. Port of `common.fit_emission_bias`: monotone in bias, so a
 /// bisection is exact to the resolution of the event count.
@@ -276,6 +395,9 @@ pub struct Tracks {
     pub band: Option<(Vec<f64>, Vec<f64>)>, // ext head: (floor, ceiling)
     pub plat: Option<(Vec<f64>, Vec<f64>)>, // dwell head: P(top), P(bottom)
     pub rev: Option<(Vec<f64>, Vec<f64>)>,  // rev head: P(peak), P(valley)
+    /// Local-period head: the passage's fastest half-stroke period in
+    /// SECONDS per row (NaN = unforwarded); empty without the head.
+    pub period: Vec<f64>,
     // per-row confidence [0,1] (NaN = unforwarded row); empty when the bundle
     // has no conf head. Read only by the review page, never by styling -- it is
     // a property of the frozen trunk, so a re-style never changes it.
@@ -321,6 +443,14 @@ pub struct StyleCfg {
     /// on this grid). This struct is the RUNTIME config, so it carries rows;
     /// the manifest carries seconds and main.rs converts once.
     pub rev_gap_rows: usize,
+    /// Per-row refractory off the local-period head: this multiple of the
+    /// predicted period (`period_gap_rows`), floored at `rev_gap_rows` and
+    /// capped at `period_cap_rows`. The emission prior keeps its fit at
+    /// `rev_gap_rows`, so the gap can only remove events. 0 = the
+    /// one-number refractory.
+    pub rev_gap_k: f64,
+    /// Cap on that refractory in ROWS (the manifest's `period_cap_s`).
+    pub period_cap_rows: usize,
     /// Fit the event decode's emission prior separately on STILL and MOVING
     /// rows (jepa_infer `--rev-gap-prior`), membership from the stillness
     /// gate below. The global fit takes its count target from the head's sum
@@ -1475,6 +1605,11 @@ pub fn compose(
     // 0.13 with the scripter's, so the box straddling a seam is low-passing
     // noise, which is what a low-pass is for.
     let lp = |x: &[f64]| box_same(x, kd);
+    // the per-row refractory off the local-period head, for the whole clip;
+    // the prior above keeps its fit at the shipped gap, so this only removes
+    let gap_var: Option<Vec<usize>> = (cfg.rev_gap_k > 0.0 && !t.period.is_empty()).then(|| {
+        period_gap_rows(&t.period, cfg.rev_gap_k, cfg.fps, cfg.rev_gap_rows, cfg.period_cap_rows)
+    });
     let lv = lp(&t.level);
     let ev = &t.env;
     let band = t.band.as_ref().map(|(lo, hi)| (lp(lo), lp(hi)));
@@ -1510,12 +1645,20 @@ pub fn compose(
         let mut seg_dirs: Option<Vec<f64>> = None;
         if viterbi {
             let (rt_g, rb_g) = t.rev.as_ref().unwrap();
-            let (vrows, vkinds) = alternating_events_rows(
-                &rt_g[lo..hi],
-                &rb_g[lo..hi],
-                &rev_bias[lo..hi],
-                cfg.rev_gap_rows,
-            );
+            let (vrows, vkinds) = match &gap_var {
+                Some(gv) => alternating_events_rows_var(
+                    &rt_g[lo..hi],
+                    &rb_g[lo..hi],
+                    &rev_bias[lo..hi],
+                    &gv[lo..hi],
+                ),
+                None => alternating_events_rows(
+                    &rt_g[lo..hi],
+                    &rb_g[lo..hi],
+                    &rev_bias[lo..hi],
+                    cfg.rev_gap_rows,
+                ),
+            };
             let keep: Vec<usize> = vrows
                 .iter()
                 .copied()
@@ -2549,6 +2692,8 @@ mod tests {
             rev_snap: 0,
             rev_viterbi: false,
             rev_gap_rows: 2,
+            rev_gap_k: 0.0,
+            period_cap_rows: 60,
             rev_gap_prior: false,
             speed_ref_s: 0.6,
             rev_smooth_s: 0.1,
@@ -2880,6 +3025,38 @@ mod tests {
         let acts = extrema_actions(&p, &t, &[0, 5], None, 15.0, 3.0 / 15.0, &[], 0.0);
         let peak = acts.iter().max_by_key(|a| a.pos).unwrap();
         assert_eq!(peak.at, 133); // row 2, not row 3
+    }
+
+    /// The per-row refractory decides the same events in both languages: the
+    /// SAME fixture runs through `common.alternating_events` with a per-row
+    /// `min_gap` in `grid_check.py`, and both sides pin these literals.
+    /// Peaks every 30 rows from 10, valleys 15 rows after each; the gap is 3
+    /// rows over the first half and 20 over the second, so the second half's
+    /// 15-row spacing is forbidden and the decode keeps one peak of it.
+    #[test]
+    fn the_per_row_refractory_forbids_the_spacing_where_it_lengthens() {
+        let n = 120;
+        let mut rt = vec![0.02; n];
+        let mut rb = vec![0.02; n];
+        for i in (10..n).step_by(30) {
+            rt[i] = 0.9;
+        }
+        for i in (25..n).step_by(30) {
+            rb[i] = 0.9;
+        }
+        let bias = vec![0.5; n];
+        let gap: Vec<usize> = (0..n).map(|i| if i < 60 { 3 } else { 20 }).collect();
+        let (rows, kinds) = alternating_events_rows_var(&rt, &rb, &bias, &gap);
+        assert_eq!(rows, vec![10, 25, 40, 55, 100]);
+        assert_eq!(kinds, vec![1, -1, 1, -1, 1]);
+        // at a constant gap the variant IS the one-number decode
+        let (r3, k3) = alternating_events_rows(&rt, &rb, &bias, 3);
+        let (rv, kv) = alternating_events_rows_var(&rt, &rb, &bias, &vec![3; n]);
+        assert_eq!((r3, k3), (rv, kv));
+        assert_eq!(
+            period_gap_rows(&[0.1, 0.5, 5.0, f64::NAN, 0.0], 0.5, 30.0, 2, 60),
+            vec![2, 7, 60, 30, 2]
+        );
     }
 
     /// The amplitude bound decides the same endpoint in both languages: the
