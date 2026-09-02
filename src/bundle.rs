@@ -507,14 +507,21 @@ impl Bundle {
         let provider = DirectMLExecutionProvider::default().build().error_on_failure();
         #[cfg(not(windows))]
         let provider = CUDAExecutionProvider::default().build().error_on_failure();
-        Session::builder()
-            .map_err(ort_err)?
-            .with_execution_providers([provider])
-            .map_err(ort_err)?
-            .commit_from_memory(smallest)
-            .map_err(ort_err)
-            .map(drop)
-            .context(NO_GPU)
+        // One closure, so that NO_GPU reaches the error whichever step
+        // produced it. Registering the provider is the step that usually
+        // does -- a missing CUDA is a library that does not load, which
+        // happens before any graph is read -- and a `?` on that line would
+        // return the runtime's own words about a file it could not open.
+        (|| -> Result<()> {
+            Session::builder()
+                .map_err(ort_err)?
+                .with_execution_providers([provider])
+                .map_err(ort_err)?
+                .commit_from_memory(smallest)
+                .map_err(ort_err)?;
+            Ok(())
+        })()
+        .context(NO_GPU)
     }
     /// The shot-cut detector runs where the encoder does. Both providers the
     /// binary ships with have a Conv3d kernel -- DirectML and CUDA -- so the
