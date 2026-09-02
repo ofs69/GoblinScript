@@ -2852,6 +2852,7 @@ fn real_main() -> Result<()> {
             .join()
             .map_err(|_| anyhow::anyhow!("the bundle-loading goblin panicked"))??;
         check_cpu_runnable(&b.manifest)?;
+        b.probe_gpu()?;
         let b = with_env_seed(b, cli.env_seed);
         if let Some(p) = &post {
             bios::devices(p, &b.manifest);
@@ -2862,6 +2863,7 @@ fn real_main() -> Result<()> {
     } else {
         let b = load_bundle(cli.bundle.as_deref())?;
         check_cpu_runnable(&b.manifest)?;
+        b.probe_gpu()?;
         let b = with_env_seed(b, cli.env_seed);
         if !cli.quiet {
             // no animation here: this user is driving a tool, not booting a

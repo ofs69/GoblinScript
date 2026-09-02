@@ -412,6 +412,22 @@ pub fn dump(_dir: &Path) -> Result<Vec<(String, usize)>> {
     )
 }
 
+/// What a machine without the goblins' GPU provider is missing, in the words
+/// its owner needs. Said in two places -- `probe_gpu` at boot, and `session`
+/// if a later session build is the first to notice -- so it is written once.
+#[cfg(not(windows))]
+const NO_GPU: &str = "no CUDA. GoblinScript needs an NVIDIA card and NVIDIA's own \
+     CUDA 12 runtime plus cuDNN 9, either on LD_LIBRARY_PATH or as .so files \
+     beside the binary. It loads them by major version -- libcudart.so.12, \
+     libcublas.so.12, libcufft.so.11 and libcudnn.so.9 -- so a CUDA 13 install \
+     does not serve this build.";
+
+#[cfg(windows)]
+const NO_GPU: &str = "no graphics card the goblins can think on. GoblinScript \
+     needs a DirectX 12 GPU -- any vendor, no runtime to install beyond the \
+     display driver. A remote desktop or a virtual machine without GPU \
+     passthrough is the usual reason a real card is not visible.";
+
 impl Bundle {
     /// Load from a bundle directory (dev / `--bundle`).
     pub fn from_dir(dir: &Path) -> Result<Self> {
@@ -453,6 +469,52 @@ impl Bundle {
 
     pub fn encoder_session(&self) -> Result<Session> {
         session(&self.encoder, "encoder")
+    }
+
+    /// Can this machine build a GPU session at all?
+    ///
+    /// Answered by building one, on the SMALLEST graph the bundle carries:
+    /// the question is whether the provider comes up, not what it runs, and
+    /// the encoder is ~180 MB of weights to find that out with.
+    ///
+    /// This registers the platform's GPU provider ALONE, and with
+    /// `error_on_failure`, which is the whole point. The chain `session`
+    /// walks ends in the CPU provider, and a machine with no usable GPU does
+    /// not fail there -- it succeeds, quietly, and then dies at the first
+    /// attention node with "Packed QKV of shape (B, L, N, 3, H) not
+    /// implemented for CPU". That message is true and it is not the problem.
+    /// So the question is asked strictly, once, before any media is touched:
+    /// a provider that cannot initialize says so here, in the time it takes
+    /// to look for its libraries, instead of after a video has been probed,
+    /// decoded and run through the shot-cut detector.
+    pub fn probe_gpu(&self) -> Result<()> {
+        if force_cpu() {
+            return Ok(());
+        }
+        #[cfg(windows)]
+        use ort::execution_providers::DirectMLExecutionProvider;
+        #[cfg(not(windows))]
+        use ort::execution_providers::CUDAExecutionProvider;
+        let smallest = [self.env_step.as_deref(), self.mask.as_deref()]
+            .into_iter()
+            .flatten()
+            .min_by_key(|g| g.len())
+            .unwrap_or(&self.transnet);
+        // DirectML is the floor on Windows, so it is what gets asked -- a
+        // `cuda` build that reaches CUDA instead is strictly better off and
+        // never needs this to pass on its own account.
+        #[cfg(windows)]
+        let provider = DirectMLExecutionProvider::default().build().error_on_failure();
+        #[cfg(not(windows))]
+        let provider = CUDAExecutionProvider::default().build().error_on_failure();
+        Session::builder()
+            .map_err(ort_err)?
+            .with_execution_providers([provider])
+            .map_err(ort_err)?
+            .commit_from_memory(smallest)
+            .map_err(ort_err)
+            .map(drop)
+            .context(NO_GPU)
     }
     /// The shot-cut detector runs where the encoder does. Both providers the
     /// binary ships with have a Conv3d kernel -- DirectML and CUDA -- so the
@@ -583,31 +645,34 @@ fn session(bytes: &[u8], what: &str) -> Result<Session> {
         })();
         match cuda {
             Ok(s) => return Ok(s),
+            #[cfg(not(windows))]
+            Err(e) => {
+                // Nothing is under this. The CPU provider registered below has
+                // no kernel for the encoder's packed attention, so carrying on
+                // buys a session that dies at its first node -- and it dies
+                // saying "Packed QKV of shape (B, L, N, 3, H) not implemented
+                // for CPU", which tells the reader nothing about the CUDA they
+                // are missing. Stop here and name it, including the MAJOR
+                // versions: these libraries are looked for by soname, so a
+                // CUDA 13 install is not a CUDA 12 one and the graphics driver
+                // alone is never enough.
+                return Err(e.context(NO_GPU));
+            }
+            #[cfg(windows)]
             Err(_) => {
-                // The raw ORT error is a screenful of build-server paths; the
-                // user-relevant content is one line. Stash it (once) instead of
-                // printing here: session building runs mid-draft, and a stray
+                // DirectML is under this, so CUDA's absence is a note about
+                // speed rather than a blocker. The raw ORT error is a
+                // screenful of build-server paths and the user-relevant
+                // content is one line; stash it (once) instead of printing
+                // here, because session building runs mid-draft and a stray
                 // print corrupts the live progress display. main drains it
                 // through the progress bars.
                 static ONCE: std::sync::Once = std::sync::Once::new();
                 ONCE.call_once(|| {
                     *PROVIDER_NOTE.lock().unwrap() = Some(
-                        if cfg!(windows) {
-                            "note: CUDA not available, running on DirectML (the \
-                             fast path needs the CUDA 12 runtime + cuDNN 9 on PATH)"
-                                .to_string()
-                        } else {
-                            // There is no second GPU provider here, so this is
-                            // not a slower path -- it is the CPU, at ~4.5 s a
-                            // forward, and the encoder's packed attention has
-                            // no kernel there at all. Say so as the blocker it
-                            // is rather than as a note about speed.
-                            "note: no CUDA. GoblinScript needs the NVIDIA CUDA 12 \
-                             runtime and cuDNN 9 on LD_LIBRARY_PATH, or their .so \
-                             files beside the binary -- both are NVIDIA's own \
-                             downloads. Without them there is no GPU to draft on."
-                                .to_string()
-                        },
+                        "note: CUDA not available, running on DirectML (the \
+                         fast path needs the CUDA 12 runtime + cuDNN 9 on PATH)"
+                            .to_string(),
                     );
                 });
             }
