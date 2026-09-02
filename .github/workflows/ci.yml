@@ -58,6 +58,11 @@ jobs:
           curl -fsSL -o ort/a.tgz "$base/v$ORT_VER/onnxruntime-linux-x64-gpu_cuda12-$ORT_VER.tgz"
           tar -xzf ort/a.tgz -C ort
           echo "ORT_LIB_LOCATION=$(cd ort/onnxruntime-*/lib && pwd)" >> "$GITHUB_ENV"
+          # Microsoft ships no static or import library for Linux, only the
+          # .so the zip carries, and ort-sys links a lib folder statically
+          # unless it is told otherwise -- it looks for libonnxruntime.a,
+          # finds none, and says it "could not link".
+          echo "ORT_PREFER_DYNAMIC_LINK=1" >> "$GITHUB_ENV"
 
       # The workspace, so xtask is built too -- it is what packs a release, and
       # a dist run that does not compile is found at the worst moment.

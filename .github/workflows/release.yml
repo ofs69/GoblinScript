@@ -195,6 +195,12 @@ jobs:
           else
             curl -fsSL -o ort/a.tgz "$base/onnxruntime-linux-x64-gpu_cuda12-$ORT_VER.tgz"
             tar -xzf ort/a.tgz -C ort
+            # Windows has onnxruntime.lib, an import library ort-sys links
+            # by name. Linux has only the .so this zip carries, and ort-sys
+            # links a lib folder statically unless it is told otherwise --
+            # it looks for libonnxruntime.a, finds none, and says it "could
+            # not link".
+            echo "ORT_PREFER_DYNAMIC_LINK=1" >> "$GITHUB_ENV"
           fi
           # the one `lib` folder the archive unpacks into, as an absolute path
           echo "ORT_LIB_LOCATION=$(cd ort/onnxruntime-*/lib && pwd)" >> "$GITHUB_ENV"

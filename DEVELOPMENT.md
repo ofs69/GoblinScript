@@ -874,7 +874,13 @@ at all on Linux. So the CUDA builds link Microsoft's own
 Windows and sm_60 to sm_120 on Linux, and they ship it beside the binary.
 `ORT_LIB_LOCATION` points at its `lib` folder; it is the variable cargo reads
 and the one `xtask` packs from, so a zip cannot carry a runtime its binary was
-not built against. Microsoft's runtime needs CUDA **12.9** beside it, not 12.6:
+not built against. On Linux that package holds the `.so` alone, and
+`ort-sys` links a lib folder statically unless `ORT_PREFER_DYNAMIC_LINK=1`
+says otherwise -- without it the build looks for `libonnxruntime.a`, finds
+none, and stops with "could not link". Windows needs no such thing: its
+`onnxruntime.lib` is the import library `ort-sys` asks for by name.
+
+Microsoft's runtime needs CUDA **12.9** beside it, not 12.6:
 the older libraries load and then fail on a missing symbol, saying
 `undefined symbol: cudaLibraryGetKernel` on Linux and nothing useful at all on
 Windows (`Error 127`).
