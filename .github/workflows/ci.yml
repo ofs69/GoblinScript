@@ -2,7 +2,9 @@
 # what the split buys -- everything below the model is ordinary Rust, and it is
 # checked on every push rather than only on the machine that ships. Both
 # platforms the release packs are built here, so a Linux-only link error is
-# found on a push and not on a tag.
+# found on a push and not on a tag. Each one links the ONNX Runtime its own
+# packages carry -- the `ort` crate's prebuilt on Windows, Microsoft's
+# `gpu_cuda12` on Linux -- because that is which build is being checked.
 name: CI
 
 on:
@@ -37,6 +39,25 @@ jobs:
             ~/.cargo/git
             target
           key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}
+
+      # Off Windows there is ONE runtime a build can link: Microsoft's own
+      # `gpu_cuda12` package, which is also what every Linux zip carries. The
+      # `ort` crate publishes no Linux prebuilt for this feature set, and its
+      # own CUDA provider reaches no Blackwell card, so a bare `cargo build`
+      # here would check a build that nobody ships. The version is PAIRED to
+      # the crate: ort-sys rc.13 carries the bindings for 1.28.
+      - name: Fetch Microsoft's ONNX Runtime
+        if: runner.os == 'Linux'
+        shell: bash
+        env:
+          ORT_VER: 1.28.1
+        run: |
+          set -eu
+          mkdir -p ort
+          base=https://github.com/microsoft/onnxruntime/releases/download
+          curl -fsSL -o ort/a.tgz "$base/v$ORT_VER/onnxruntime-linux-x64-gpu_cuda12-$ORT_VER.tgz"
+          tar -xzf ort/a.tgz -C ort
+          echo "ORT_LIB_LOCATION=$(cd ort/onnxruntime-*/lib && pwd)" >> "$GITHUB_ENV"
 
       # The workspace, so xtask is built too -- it is what packs a release, and
       # a dist run that does not compile is found at the worst moment.

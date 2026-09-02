@@ -35,6 +35,14 @@ windows = { version = "0.62.2", features = [
     "Win32_Globalization",
 ] }
 
+# DirectML is a Windows EP and exists in no other platform's prebuilt runtime,
+# so it is asked for HERE and not in the main table: a shared `directml` names a
+# feature set -- `cuda13, directml` -- that ort publishes no Linux build of, and
+# a Linux `cargo build` then links nothing and fails on `OrtGetApiBase`. The
+# code behind it is scoped the same way, under `cfg(all(windows, not(feature =
+# "cuda")))`.
+ort = { version = "2.0.0-rc.13", default-features = false, features = ["directml"] }
+
 [dependencies]
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
@@ -48,7 +56,7 @@ ratatui = "0.29"
 # OpenSSL headers on the host.
 ort = { version = "2.0.0-rc.13", default-features = false, features = [
     "std", "ndarray", "tracing", "download-binaries", "tls-rustls",
-    "copy-dylibs", "api-28", "directml",
+    "copy-dylibs", "api-28",
 ] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
