@@ -102,6 +102,21 @@ pub struct Manifest {
     pub heads: Heads,
     pub still_eps: f64,
     pub ext_snap: f64,
+    /// Composed styling's amplitude bound: a stroke's written excursion is
+    /// at most this multiple of the marginal's own travel over the segment,
+    /// so the written speed stays under that multiple of the speed the
+    /// model reads there. 0 (absent = the serde default) = off.
+    #[serde(default)]
+    pub amp_cap_x: f64,
+    /// Hz: the bound loosens with the segment's own frequency above this on
+    /// the hedge curve `(f / f0) ^ env_gain_p`, flat below. 0 = flat.
+    #[serde(default)]
+    pub amp_cap_f0: f64,
+    /// Exponent of the envelope's measured frequency hedge, which the bound
+    /// loosens on. jepa_train's `ENV_GAIN_P`; a bundle without the field
+    /// carries no bound, so the value is never reached.
+    #[serde(default = "default_env_gain_p")]
+    pub env_gain_p: f64,
     pub plat_thr: f64,
     pub plat_lo: f64,
     /// Dwell-call peak filter; 0 disables it (and pre-filter bundles have no
@@ -167,6 +182,11 @@ pub struct Manifest {
 /// jepa_infer's `SPEED_REF_S`. Only reached by a bundle exported before the
 /// field existed; every current export writes it.
 fn default_speed_ref_s() -> f64 {
+    0.6
+}
+
+/// jepa_train's `ENV_GAIN_P`, for a bundle exported before the field.
+fn default_env_gain_p() -> f64 {
     0.6
 }
 

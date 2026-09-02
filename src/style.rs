@@ -286,6 +286,13 @@ pub struct StyleCfg {
     pub fps: f64,
     pub still_eps: f64,
     pub ext_snap: f64,
+    /// The amplitude bound, x the marginal's own travel (`amp_bound`);
+    /// 0 = off.
+    pub amp_cap_x: f64,
+    /// Hz above which the bound loosens on the hedge curve; 0 = flat.
+    pub amp_cap_f0: f64,
+    /// The hedge curve's exponent.
+    pub env_gain_p: f64,
     pub plat_thr: f64,
     pub plat_lo: f64,
     pub plat_peak: f64,
@@ -1347,6 +1354,47 @@ fn depth_uniformize(
 /// Composed styling over shot spans -> (0..100 position track, sub-frame
 /// reversal times: apex row -> ms, filled under `cfg.subframe_rev` with a
 /// rev head -- port of jepa_infer's `--subframe rev` parabola).
+/// The marginal's own travel bounds a stroke's written excursion. A segment
+/// of `n_rows` rows that the marginal integrates to `tr_raw` position units
+/// may move the written position at most `amp_cap_x` times that far, so the
+/// written speed stays under `amp_cap_x` times the speed the model reads on
+/// those rows -- the slow-section spike read's own shape, in the one
+/// quantity the decode has without a script. Depth only: no time moves and
+/// no reversal is deleted.
+///
+/// The marginal's magnitude carries the expectation decode's frequency
+/// hedge (calibrated below ~1 Hz, about half above 3.75 Hz), so a flat bound
+/// writes the fast strokes short. With `amp_cap_f0` > 0 the bound loosens
+/// with the segment's own frequency on the measured hedge curve
+/// `(f / f0) ^ env_gain_p` above `f0` and stays flat below it, where the
+/// artifact lives. `amp_cap_x` 0 is off. Port of `jepa_infer.amp_bound`;
+/// `grid_check.py` pins both to one fixture.
+pub fn amp_bound(
+    end: f64,
+    cur: f64,
+    tr_raw: f64,
+    n_rows: usize,
+    dt: f64,
+    amp_cap_x: f64,
+    amp_cap_f0: f64,
+    env_gain_p: f64,
+) -> f64 {
+    if amp_cap_x <= 0.0 || n_rows == 0 {
+        return end;
+    }
+    let mut xs = amp_cap_x;
+    if amp_cap_f0 > 0.0 {
+        let f_seg = 0.5 / (n_rows as f64 * dt).max(1e-9);
+        xs *= (f_seg / amp_cap_f0).powf(env_gain_p).max(1.0);
+    }
+    let lim_x = xs * tr_raw;
+    if (end - cur).abs() > lim_x {
+        (cur + (end - cur).signum() * lim_x).clamp(0.0, 100.0)
+    } else {
+        end
+    }
+}
+
 pub fn compose(
     t: &Tracks,
     shot_edges: &[usize],
@@ -1582,6 +1630,17 @@ pub fn compose(
                         end = bhi[lo + b - 1].clamp(0.0, 100.0);
                     }
                 }
+                // a quiet segment is already at the marginal's own travel
+                end = amp_bound(
+                    end,
+                    cur,
+                    tr_raw,
+                    b - a,
+                    dt,
+                    cfg.amp_cap_x,
+                    cfg.amp_cap_f0,
+                    cfg.env_gain_p,
+                );
             }
             // move along the integrated |velocity| profile, so the stroke's
             // shape is the model's, not a ramp
@@ -2477,6 +2536,9 @@ mod tests {
             fps: 30.0,
             still_eps: 15.0,
             ext_snap: 20.0,
+            amp_cap_x: 0.0,
+            amp_cap_f0: 0.0,
+            env_gain_p: 0.6,
             plat_thr: 0.5,
             plat_lo: 0.3,
             plat_peak: 0.65,
@@ -2818,6 +2880,39 @@ mod tests {
         let acts = extrema_actions(&p, &t, &[0, 5], None, 15.0, 3.0 / 15.0, &[], 0.0);
         let peak = acts.iter().max_by_key(|a| a.pos).unwrap();
         assert_eq!(peak.at, 133); // row 2, not row 3
+    }
+
+    /// The amplitude bound decides the same endpoint in both languages: the
+    /// SAME table runs through `jepa_infer.amp_bound` in `grid_check.py`,
+    /// and both sides pin these literals. 30 rows/s; a 3-row segment is a
+    /// 5 Hz stroke, a 60-row one 0.25 Hz.
+    #[test]
+    fn the_amplitude_bound_holds_the_stroke_to_the_marginals_travel() {
+        let dt = 1.0 / 30.0;
+        // (end, cur, tr_raw, n_rows, x, f0, p) -> end
+        let table: [((f64, f64, f64, usize, f64, f64, f64), f64); 7] = [
+            // off: untouched, however far the stroke asks
+            ((90.0, 50.0, 10.0, 3, 0.0, 0.0, 0.6), 90.0),
+            // a 40-unit ask over 10 units of travel at x 2 writes 20
+            ((90.0, 50.0, 10.0, 3, 2.0, 0.0, 0.6), 70.0),
+            // inside the bound: untouched
+            ((90.0, 50.0, 30.0, 3, 2.0, 0.0, 0.6), 90.0),
+            // downward, the same bound
+            ((10.0, 50.0, 10.0, 3, 2.0, 0.0, 0.6), 30.0),
+            // 5 Hz at f0 1.25, p 0.5: the ratio 4 gains exactly 2, so x 4
+            ((90.0, 20.0, 10.0, 3, 2.0, 1.25, 0.5), 60.0),
+            // 0.25 Hz at f0 1.25: below f0 the bound stays flat
+            ((90.0, 20.0, 10.0, 60, 2.0, 1.25, 0.5), 40.0),
+            // 5 Hz at f0 1, p 0.6: 20 + 10 x 2 x 5^0.6
+            ((90.0, 20.0, 10.0, 3, 2.0, 1.0, 0.6), 72.53055608807534),
+        ];
+        for ((end, cur, tr, n, x, f0, pw), want) in table {
+            let got = amp_bound(end, cur, tr, n, dt, x, f0, pw);
+            assert!(
+                (got - want).abs() < 1e-9,
+                "{end} {cur} {tr} {n} {x} {f0} {pw}: {got} != {want}"
+            );
+        }
     }
 
     /// Two shots at 30 rows/s, cut at row 60: shot A rises 20 -> 40 and then

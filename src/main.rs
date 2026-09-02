@@ -1101,6 +1101,9 @@ fn style_cfg(man: &bundle::Manifest, p: &style::Params) -> style::StyleCfg {
         // an expert numeric override wins over the preset it stands in for
         still_eps: p.still_eps.unwrap_or_else(|| p.stillness.still_eps(man.still_eps)),
         ext_snap: man.ext_snap,
+        amp_cap_x: man.amp_cap_x,
+        amp_cap_f0: man.amp_cap_f0,
+        env_gain_p: man.env_gain_p,
         plat_thr: man.plat_thr,
         plat_lo: man.plat_lo,
         plat_peak: man.plat_peak,
